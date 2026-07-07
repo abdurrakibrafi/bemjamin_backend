@@ -129,11 +129,10 @@
 
 
 
-
-
 import trimesh
 import numpy as np
 import traceback
+
 
 def _align_mesh_to_principal_axes(mesh):
     print("--- Aligning mesh to principal axes ---")
@@ -315,13 +314,24 @@ def perform_all_measurements(mesh):
         ear_left = _find_ear_landmarks(mesh, landmarks, side='left')
         ear = ear_right if ear_right is not None else ear_left
 
+        # --- FIX: ear_height_G is now averaged across both sides when both are
+        # available, instead of relying on whichever single side happened to be
+        # picked. This reduces scan-to-scan instability (e.g. 9.45cm vs 2.43cm
+        # for the same person) caused by one side's landmark search picking up
+        # noisy/occluded surface detail. ---
+        ear_heights = []
+        for e in (ear_right, ear_left):
+            if e is not None:
+                raw_h = abs(mesh.vertices[e['ear_top_idx'], 2] - mesh.vertices[e['earlobe_bottom_idx'], 2])
+                ear_heights.append(raw_h)
+
         if ear is not None:
             # E: vertical distance, A reference line (eyebrow/nasion height) -> bottom of earlobe
             raw_E = _calculate_vertical_distance(mesh, landmarks['nasion_idx'], ear['earlobe_bottom_idx'])
             eyebrow_to_earlobe_E = raw_E * scale_factor
 
-            # G: ear height (top of ear -> earlobe bottom)
-            raw_G = abs(mesh.vertices[ear['ear_top_idx'], 2] - mesh.vertices[ear['earlobe_bottom_idx'], 2])
+            # G: ear height (top of ear -> earlobe bottom), averaged over available sides
+            raw_G = float(np.mean(ear_heights)) if ear_heights else 0.0
             ear_height_G = raw_G * scale_factor
 
             # H: ear width (front-back extent of the ear region)
@@ -342,8 +352,27 @@ def perform_all_measurements(mesh):
         else:
             eye_corner_to_ear_F = head_width * 0.48
 
-        ear_to_ear = head_width * 0.91
-        eye_to_eye = head_width * 0.24
+        # --- FIX: eye_to_eye now measured from the actual detected eye-corner
+        # landmarks instead of a fixed head_width ratio (which previously gave
+        # an identical, anatomically implausible 3.70cm on every scan). ---
+        raw_eye_to_eye = _calculate_surface_distance(
+            mesh,
+            landmarks['eye_outer_corner_left_idx'],
+            landmarks['eye_outer_corner_right_idx'],
+        )
+        eye_to_eye = raw_eye_to_eye * scale_factor
+
+        # --- FIX: ear_to_ear now measured from the actual detected ear outer
+        # landmarks (both sides) instead of a fixed head_width ratio. Falls
+        # back to the ratio estimate only if one side's ear landmark could not
+        # be found (coarse/occluded scan). ---
+        if ear_right is not None and ear_left is not None:
+            raw_ear_to_ear = _calculate_surface_distance(
+                mesh, ear_left['ear_outer_idx'], ear_right['ear_outer_idx']
+            )
+            ear_to_ear = raw_ear_to_ear * scale_factor
+        else:
+            ear_to_ear = head_width * 0.91
 
         # NOTE: L, M, N are not part of the ATO Form measurement sheet (Fig. 1-4).
         # They appear to be internal/derived helmet cheek-guard design parameters
