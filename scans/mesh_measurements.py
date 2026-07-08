@@ -274,6 +274,28 @@ def _calculate_horizontal_distance(mesh, ref_idx, target_idx):
     return float(abs(mesh.vertices[ref_idx, 1] - mesh.vertices[target_idx, 1]))
 
 
+def _estimate_mesh_scale_factor(mesh):
+    """Estimate a conversion factor from mesh units to centimeters.
+
+    The original implementation forced every scan to a synthetic average head width,
+    which made different scans produce almost identical measurements. Real 3D scans
+    are often exported in millimeters, so we use a simple heuristic: if the mesh size
+    is large, treat the coordinates as millimeters and convert to centimeters.
+    Otherwise keep the raw units as-is.
+    """
+    extents = np.asarray(mesh.bounding_box.extents, dtype=float)
+    if extents.size == 0:
+        return 1.0
+
+    max_extent = float(np.max(extents))
+    if max_extent <= 0:
+        return 1.0
+
+    # Typical head scans exported from reconstruction services are in millimeters.
+    # A span above 50 units is a strong sign of mm-scale data.
+    return 0.1 if max_extent > 50 else 1.0
+
+
 def perform_all_measurements(mesh):
     print("--- Performing detailed measurements ---")
     try:
@@ -282,11 +304,7 @@ def perform_all_measurements(mesh):
         extents = mesh.bounding_box.extents
 
         raw_width = extents[0]
-        AVERAGE_HUMAN_HEAD_WIDTH_CM = 15.4
-
-        scale_factor = 1.0
-        if raw_width > 0:
-            scale_factor = AVERAGE_HUMAN_HEAD_WIDTH_CM / raw_width
+        scale_factor = _estimate_mesh_scale_factor(mesh)
 
         head_width = extents[0] * scale_factor
         head_length = extents[1] * scale_factor
