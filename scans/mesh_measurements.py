@@ -135,29 +135,16 @@ import traceback
 
 
 def _align_mesh_to_principal_axes(mesh):
-    print("--- Aligning mesh to principal axes ---")
-    mesh.apply_translation(-mesh.center_mass)
-    principal_axes = mesh.principal_inertia_vectors
-
-    transform_matrix = np.eye(4)
-    transform_matrix[:3, :3] = principal_axes.T
-
-    mesh.apply_transform(np.linalg.inv(transform_matrix))
-
-    if np.mean(mesh.vertices[:, 1]) < 0:
-        flip_matrix = trimesh.transformations.rotation_matrix(np.pi, [0, 0, 1])
-        mesh.apply_transform(flip_matrix)
-
-    principal_axes = mesh.principal_inertia_vectors
-    final_rotation = np.eye(4)
-    final_rotation[:3, :3] = principal_axes.T
-    mesh.apply_transform(final_rotation)
-
+    # KeenTools meshes are already aligned to canonical axes.
+    # We bypass principal axes alignment to keep the anatomical orientation stable.
     return mesh
 
 
 def _find_anatomical_landmarks(mesh):
     vertices = mesh.vertices
+    extents = mesh.extents
+    
+    # Default landmarks based on argmin/argmax as fallback
     landmarks = {
         'chin_idx': np.argmin(vertices[:, 2]),
         'nose_tip_idx': np.argmax(vertices[:, 1]),
@@ -167,10 +154,44 @@ def _find_anatomical_landmarks(mesh):
         'left_side_idx': np.argmin(vertices[:, 0]),
     }
 
-    extents = mesh.extents
+    # Only perform advanced landmark heuristics if the mesh is dense enough
+    # to represent a face (e.g. > 100 vertices).
+    if len(vertices) > 100:
+        try:
+            top_z = vertices[landmarks['top_of_head_idx'], 2]
+            
+            # Nose is typically in the upper half of the head, to avoid neck/hair
+            z_min_nose = top_z - extents[2] * 0.5
+            nose_candidates = np.where(vertices[:, 2] > z_min_nose)[0]
+            if len(nose_candidates) > 0:
+                landmarks['nose_tip_idx'] = nose_candidates[np.argmax(vertices[nose_candidates, 1])]
+            
+            nose_z = vertices[landmarks['nose_tip_idx'], 2]
+            upper_head_h = top_z - nose_z
+            
+            # Chin search band: below the nose tip
+            chin_z_min = nose_z - 1.1 * upper_head_h
+            chin_z_max = nose_z - 0.4 * upper_head_h
+            chin_band_mask = (vertices[:, 2] > chin_z_min) & (vertices[:, 2] < chin_z_max)
+            candidate_indices = np.where(chin_band_mask)[0]
+            if len(candidate_indices) > 0:
+                chin_local_idx = np.argmax(vertices[candidate_indices, 1])
+                landmarks['chin_idx'] = candidate_indices[chin_local_idx]
+                
+            chin_z = vertices[landmarks['chin_idx'], 2]
+            
+            # Head vertices (above chin)
+            head_indices = np.where(vertices[:, 2] > chin_z)[0]
+            if len(head_indices) > 0:
+                landmarks['left_side_idx'] = head_indices[np.argmin(vertices[head_indices, 0])]
+                landmarks['right_side_idx'] = head_indices[np.argmax(vertices[head_indices, 0])]
+                landmarks['back_of_head_idx'] = head_indices[np.argmin(vertices[head_indices, 1])]
+        except Exception:
+            pass # Keep defaults on error
+
     try:
         nose_tip = vertices[landmarks['nose_tip_idx']]
-        nasion_est = nose_tip + [0, -extents[1] * 0.1, extents[1] * 0.15]
+        nasion_est = nose_tip + [0, -extents[1] * 0.1, extents[2] * 0.15]
         _, _, nasion_idx = trimesh.proximity.closest_point(mesh, [nasion_est])
         landmarks['nasion_idx'] = nasion_idx[0]
     except Exception:
@@ -277,11 +298,11 @@ def _calculate_horizontal_distance(mesh, ref_idx, target_idx):
 def _estimate_mesh_scale_factor(mesh):
     """Estimate a conversion factor from mesh units to centimeters.
 
-    The original implementation forced every scan to a synthetic average head width,
-    which made different scans produce almost identical measurements. Real 3D scans
-    are often exported in millimeters, so we use a simple heuristic: if the mesh size
-    is large, treat the coordinates as millimeters and convert to centimeters.
-    Otherwise keep the raw units as-is.
+    Real 3D scans can be exported in meters, centimeters, or millimeters. We detect the scale
+    heuristically based on the bounding box size:
+    1. Meters (max_extent < 1.0) -> Convert to cm by multiplying by 100.0
+    2. Millimeters (max_extent > 50) -> Convert to cm by multiplying by 0.1
+    3. Centimeters (otherwise) -> Keep as-is (scale factor of 1.0)
     """
     extents = np.asarray(mesh.bounding_box.extents, dtype=float)
     if extents.size == 0:
@@ -291,9 +312,11 @@ def _estimate_mesh_scale_factor(mesh):
     if max_extent <= 0:
         return 1.0
 
-    # Typical head scans exported from reconstruction services are in millimeters.
-    # A span above 50 units is a strong sign of mm-scale data.
-    return 0.1 if max_extent > 50 else 1.0
+    if max_extent < 1.0:
+        return 100.0
+    elif max_extent > 50.0:
+        return 0.1
+    return 1.0
 
 
 def perform_all_measurements(mesh):
@@ -303,12 +326,27 @@ def perform_all_measurements(mesh):
         landmarks = _find_anatomical_landmarks(mesh)
         extents = mesh.bounding_box.extents
 
-        raw_width = extents[0]
         scale_factor = _estimate_mesh_scale_factor(mesh)
 
-        head_width = extents[0] * scale_factor
-        head_length = extents[1] * scale_factor
-        head_height = extents[2] * scale_factor
+        vertices = mesh.vertices
+        if len(vertices) > 100:
+            top_z = vertices[landmarks['top_of_head_idx'], 2]
+            chin_z = vertices[landmarks['chin_idx'], 2]
+            head_height = (top_z - chin_z) * scale_factor
+            
+            # Filter vertices above the chin to find actual head width and length (excluding shoulders)
+            head_vertices = vertices[vertices[:, 2] > chin_z]
+            if len(head_vertices) > 0:
+                head_extents = np.max(head_vertices, axis=0) - np.min(head_vertices, axis=0)
+                head_width = head_extents[0] * scale_factor
+                head_length = head_extents[1] * scale_factor
+            else:
+                head_width = extents[0] * scale_factor
+                head_length = extents[1] * scale_factor
+        else:
+            head_width = extents[0] * scale_factor
+            head_length = extents[1] * scale_factor
+            head_height = extents[2] * scale_factor
 
         # A: head circumference at eyebrow level (ellipse approximation)
         a, b = head_width / 2, head_length / 2
