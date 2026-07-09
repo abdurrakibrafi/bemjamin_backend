@@ -166,12 +166,12 @@ def generate_scan_pdf(scan_object):
 
             text_color = "#E74C3C"
 
-            if scan_object.ear_to_ear:
-                val = f"{scan_object.ear_to_ear} cm"
-                draw.text((W * 0.25, H * 0.18), val, fill=text_color, font=font, anchor="mm")
-            
             if scan_object.head_width:
                 val = f"{scan_object.head_width} cm"
+                draw.text((W * 0.25, H * 0.18), val, fill=text_color, font=font, anchor="mm")
+            
+            if scan_object.head_length:
+                val = f"{scan_object.head_length} cm"
                 draw.text((W * 0.75, H * 0.18), val, fill=text_color, font=font, anchor="mm")
             
             if scan_object.head_height:
