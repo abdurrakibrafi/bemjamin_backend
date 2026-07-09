@@ -145,11 +145,12 @@ def _find_anatomical_landmarks(mesh):
     extents = mesh.extents
     
     # Default landmarks based on argmin/argmax as fallback
+    # In KeenTools: Y (index 1) is vertical, Z (index 2) is depth, X (index 0) is width
     landmarks = {
-        'chin_idx': np.argmin(vertices[:, 2]),
-        'nose_tip_idx': np.argmax(vertices[:, 1]),
-        'top_of_head_idx': np.argmax(vertices[:, 2]),
-        'back_of_head_idx': np.argmin(vertices[:, 1]),
+        'chin_idx': np.argmin(vertices[:, 1]),
+        'nose_tip_idx': np.argmax(vertices[:, 2]),
+        'top_of_head_idx': np.argmax(vertices[:, 1]),
+        'back_of_head_idx': np.argmin(vertices[:, 2]),
         'right_side_idx': np.argmax(vertices[:, 0]),
         'left_side_idx': np.argmin(vertices[:, 0]),
     }
@@ -158,40 +159,41 @@ def _find_anatomical_landmarks(mesh):
     # to represent a face (e.g. > 100 vertices).
     if len(vertices) > 100:
         try:
-            top_z = vertices[landmarks['top_of_head_idx'], 2]
+            top_y = vertices[landmarks['top_of_head_idx'], 1]
             
             # Nose is typically in the upper half of the head, to avoid neck/hair
-            z_min_nose = top_z - extents[2] * 0.5
-            nose_candidates = np.where(vertices[:, 2] > z_min_nose)[0]
+            y_min_nose = top_y - extents[1] * 0.5
+            nose_candidates = np.where(vertices[:, 1] > y_min_nose)[0]
             if len(nose_candidates) > 0:
-                landmarks['nose_tip_idx'] = nose_candidates[np.argmax(vertices[nose_candidates, 1])]
+                landmarks['nose_tip_idx'] = nose_candidates[np.argmax(vertices[nose_candidates, 2])]
             
-            nose_z = vertices[landmarks['nose_tip_idx'], 2]
-            upper_head_h = top_z - nose_z
+            nose_y = vertices[landmarks['nose_tip_idx'], 1]
+            upper_head_h = top_y - nose_y
             
-            # Chin search band: below the nose tip
-            chin_z_min = nose_z - 1.1 * upper_head_h
-            chin_z_max = nose_z - 0.4 * upper_head_h
-            chin_band_mask = (vertices[:, 2] > chin_z_min) & (vertices[:, 2] < chin_z_max)
+            # Chin search band: below the nose tip vertically
+            chin_y_min = nose_y - 1.1 * upper_head_h
+            chin_y_max = nose_y - 0.4 * upper_head_h
+            chin_band_mask = (vertices[:, 1] > chin_y_min) & (vertices[:, 1] < chin_y_max)
             candidate_indices = np.where(chin_band_mask)[0]
             if len(candidate_indices) > 0:
-                chin_local_idx = np.argmax(vertices[candidate_indices, 1])
+                # Chin is the forward-most point (highest Z) in the chin vertical band
+                chin_local_idx = np.argmax(vertices[candidate_indices, 2])
                 landmarks['chin_idx'] = candidate_indices[chin_local_idx]
                 
-            chin_z = vertices[landmarks['chin_idx'], 2]
+            chin_y = vertices[landmarks['chin_idx'], 1]
             
-            # Head vertices (above chin)
-            head_indices = np.where(vertices[:, 2] > chin_z)[0]
+            # Head vertices (above chin level)
+            head_indices = np.where(vertices[:, 1] > chin_y)[0]
             if len(head_indices) > 0:
                 landmarks['left_side_idx'] = head_indices[np.argmin(vertices[head_indices, 0])]
                 landmarks['right_side_idx'] = head_indices[np.argmax(vertices[head_indices, 0])]
-                landmarks['back_of_head_idx'] = head_indices[np.argmin(vertices[head_indices, 1])]
+                landmarks['back_of_head_idx'] = head_indices[np.argmin(vertices[head_indices, 2])]
         except Exception:
             pass # Keep defaults on error
 
     try:
         nose_tip = vertices[landmarks['nose_tip_idx']]
-        nasion_est = nose_tip + [0, -extents[1] * 0.1, extents[2] * 0.15]
+        nasion_est = nose_tip + [0, extents[1] * 0.08, -extents[2] * 0.08]
         # Pure numpy calculation to find closest vertex, avoiding trimesh.proximity/rtree dependency
         nasion_idx = int(np.argmin(np.linalg.norm(vertices - nasion_est, axis=1)))
         landmarks['nasion_idx'] = nasion_idx
@@ -200,11 +202,11 @@ def _find_anatomical_landmarks(mesh):
 
     # --- Eye outer corner estimate (both sides) ---
     # Anthropometric approximation: outer eye corner sits laterally offset from the
-    # nasion, slightly posterior (backward in Y) and inferior (down in Z).
+    # nasion, slightly posterior (backward in Z) and inferior (down in Y).
     nasion_pt = vertices[landmarks['nasion_idx']]
     for side, sign in (('right', 1), ('left', -1)):
         try:
-            est = nasion_pt + [sign * extents[0] * 0.17, -extents[1] * 0.08, -extents[2] * 0.03]
+            est = nasion_pt + [sign * extents[0] * 0.17, -extents[1] * 0.03, -extents[2] * 0.05]
             # Pure numpy calculation to find closest vertex
             idx = int(np.argmin(np.linalg.norm(vertices - est, axis=1)))
             landmarks[f'eye_outer_corner_{side}_idx'] = idx
@@ -219,30 +221,27 @@ def _find_ear_landmarks(mesh, landmarks, side='right'):
     Locate approximate ear landmarks (top of ear, earlobe bottom, ear outer/lateral point)
     by searching a vertical band of the mesh on one side of the head for the
     laterally-protruding ear region, rather than guessing a fixed ratio of head height.
-
-    This is a geometric heuristic (works best on reasonably dense, ear-detailed scans);
-    on low-poly or ear-occluded scans it degrades gracefully to a proportional estimate.
     """
     vertices = mesh.vertices
     extents = mesh.extents
 
-    chin_z = vertices[landmarks['chin_idx'], 2]
-    top_z = vertices[landmarks['top_of_head_idx'], 2]
-    head_h = top_z - chin_z
+    chin_y = vertices[landmarks['chin_idx'], 1]
+    top_y = vertices[landmarks['top_of_head_idx'], 1]
+    head_h = top_y - chin_y
 
-    # Ears typically sit between roughly eyebrow level and nose-base level
-    band_low = chin_z + head_h * 0.25
-    band_high = chin_z + head_h * 0.65
+    # Ears typically sit between roughly eyebrow level and nose-base level (Y-axis)
+    band_low = chin_y + head_h * 0.3
+    band_high = chin_y + head_h * 0.7
 
     x_thresh = extents[0] * 0.32  # only look well off the mid-sagittal plane
-    z_mask = (vertices[:, 2] > band_low) & (vertices[:, 2] < band_high)
+    y_mask = (vertices[:, 1] > band_low) & (vertices[:, 1] < band_high)
 
     if side == 'right':
         side_mask = vertices[:, 0] > x_thresh
     else:
         side_mask = vertices[:, 0] < -x_thresh
 
-    mask = z_mask & side_mask
+    mask = y_mask & side_mask
     candidate_idx = np.where(mask)[0]
 
     if len(candidate_idx) < 5:
@@ -250,22 +249,22 @@ def _find_ear_landmarks(mesh, landmarks, side='right'):
 
     candidates = vertices[candidate_idx]
 
-    # The ear's outermost (most lateral) point in this band
+    # The ear's outermost (most lateral) point in this band (X-axis)
     outer_local = np.argmax(np.abs(candidates[:, 0]))
     ear_outer_idx = candidate_idx[outer_local]
-    outer_y = vertices[ear_outer_idx, 1]
+    outer_z = vertices[ear_outer_idx, 2]
 
-    # Narrow to a front-back slice around the lateral point to isolate the ear itself
-    y_slice_mask = np.abs(candidates[:, 1] - outer_y) < (extents[1] * 0.09)
-    slice_idx = candidate_idx[y_slice_mask]
+    # Narrow to a front-back slice around the lateral point (depth Z-axis) to isolate the ear
+    z_slice_mask = np.abs(candidates[:, 2] - outer_z) < (extents[2] * 0.09)
+    slice_idx = candidate_idx[z_slice_mask]
     if len(slice_idx) < 3:
         slice_idx = candidate_idx
 
-    ear_top_idx = slice_idx[np.argmax(vertices[slice_idx, 2])]
-    earlobe_bottom_idx = slice_idx[np.argmin(vertices[slice_idx, 2])]
+    ear_top_idx = slice_idx[np.argmax(vertices[slice_idx, 1])] # max Y
+    earlobe_bottom_idx = slice_idx[np.argmin(vertices[slice_idx, 1])] # min Y
 
-    y_vals = vertices[slice_idx, 1]
-    ear_front_to_back = float(np.max(y_vals) - np.min(y_vals))
+    z_vals = vertices[slice_idx, 2]
+    ear_front_to_back = float(np.max(z_vals) - np.min(z_vals))
 
     return {
         'ear_top_idx': ear_top_idx,
@@ -287,13 +286,13 @@ def _calculate_surface_distance(mesh, start_idx, end_idx):
 
 
 def _calculate_vertical_distance(mesh, ref_idx, target_idx):
-    """Vertical (z-axis) distance between a reference-line height and a target point."""
-    return float(abs(mesh.vertices[ref_idx, 2] - mesh.vertices[target_idx, 2]))
+    """Vertical (y-axis) distance between a reference-line height and a target point."""
+    return float(abs(mesh.vertices[ref_idx, 1] - mesh.vertices[target_idx, 1]))
 
 
 def _calculate_horizontal_distance(mesh, ref_idx, target_idx):
-    """Front-back (y-axis) distance between a reference point and a target point."""
-    return float(abs(mesh.vertices[ref_idx, 1] - mesh.vertices[target_idx, 1]))
+    """Front-back (z-axis) distance between a reference point and a target point."""
+    return float(abs(mesh.vertices[ref_idx, 2] - mesh.vertices[target_idx, 2]))
 
 
 def _estimate_mesh_scale_factor(mesh):
@@ -331,23 +330,23 @@ def perform_all_measurements(mesh):
 
         vertices = mesh.vertices
         if len(vertices) > 100:
-            top_z = vertices[landmarks['top_of_head_idx'], 2]
-            chin_z = vertices[landmarks['chin_idx'], 2]
-            head_height = (top_z - chin_z) * scale_factor
+            top_y = vertices[landmarks['top_of_head_idx'], 1]
+            chin_y = vertices[landmarks['chin_idx'], 1]
+            head_height = (top_y - chin_y) * scale_factor
             
-            # Filter vertices above the chin to find actual head width and length (excluding shoulders)
-            head_vertices = vertices[vertices[:, 2] > chin_z]
+            # Filter vertices above the chin to find actual head width (X) and length (Z) (excluding shoulders)
+            head_vertices = vertices[vertices[:, 1] > chin_y]
             if len(head_vertices) > 0:
                 head_extents = np.max(head_vertices, axis=0) - np.min(head_vertices, axis=0)
                 head_width = head_extents[0] * scale_factor
-                head_length = head_extents[1] * scale_factor
+                head_length = head_extents[2] * scale_factor
             else:
                 head_width = extents[0] * scale_factor
-                head_length = extents[1] * scale_factor
+                head_length = extents[2] * scale_factor
         else:
             head_width = extents[0] * scale_factor
-            head_length = extents[1] * scale_factor
-            head_height = extents[2] * scale_factor
+            head_length = extents[2] * scale_factor
+            head_height = extents[1] * scale_factor
 
         # A: head circumference at eyebrow level (ellipse approximation)
         a, b = head_width / 2, head_length / 2
@@ -371,15 +370,10 @@ def perform_all_measurements(mesh):
         ear_left = _find_ear_landmarks(mesh, landmarks, side='left')
         ear = ear_right if ear_right is not None else ear_left
 
-        # --- FIX: ear_height_G is now averaged across both sides when both are
-        # available, instead of relying on whichever single side happened to be
-        # picked. This reduces scan-to-scan instability (e.g. 9.45cm vs 2.43cm
-        # for the same person) caused by one side's landmark search picking up
-        # noisy/occluded surface detail. ---
         ear_heights = []
         for e in (ear_right, ear_left):
             if e is not None:
-                raw_h = abs(mesh.vertices[e['ear_top_idx'], 2] - mesh.vertices[e['earlobe_bottom_idx'], 2])
+                raw_h = abs(mesh.vertices[e['ear_top_idx'], 1] - mesh.vertices[e['earlobe_bottom_idx'], 1])
                 ear_heights.append(raw_h)
 
         if ear is not None:
