@@ -170,14 +170,14 @@ def _find_anatomical_landmarks(mesh):
             nose_y = vertices[landmarks['nose_tip_idx'], 1]
             upper_head_h = top_y - nose_y
             
-            # Chin search band: below the nose tip vertically
-            chin_y_min = nose_y - 1.1 * upper_head_h
-            chin_y_max = nose_y - 0.4 * upper_head_h
+            # Chin search band: below the nose tip vertically, excluding the mouth/lips
+            chin_y_min = nose_y - 1.4 * upper_head_h
+            chin_y_max = nose_y - 0.6 * upper_head_h
             chin_band_mask = (vertices[:, 1] > chin_y_min) & (vertices[:, 1] < chin_y_max)
             candidate_indices = np.where(chin_band_mask)[0]
             if len(candidate_indices) > 0:
-                # Chin is the forward-most point (highest Z) in the chin vertical band
-                chin_local_idx = np.argmax(vertices[candidate_indices, 2])
+                # Chin is the forward-most and lowest point in this band, maximizing Z - Y
+                chin_local_idx = np.argmax(vertices[candidate_indices, 2] - vertices[candidate_indices, 1])
                 landmarks['chin_idx'] = candidate_indices[chin_local_idx]
                 
             chin_y = vertices[landmarks['chin_idx'], 1]
