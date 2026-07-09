@@ -192,21 +192,22 @@ def _find_anatomical_landmarks(mesh):
     try:
         nose_tip = vertices[landmarks['nose_tip_idx']]
         nasion_est = nose_tip + [0, -extents[1] * 0.1, extents[2] * 0.15]
-        _, _, nasion_idx = trimesh.proximity.closest_point(mesh, [nasion_est])
-        landmarks['nasion_idx'] = nasion_idx[0]
+        # Pure numpy calculation to find closest vertex, avoiding trimesh.proximity/rtree dependency
+        nasion_idx = int(np.argmin(np.linalg.norm(vertices - nasion_est, axis=1)))
+        landmarks['nasion_idx'] = nasion_idx
     except Exception:
         landmarks['nasion_idx'] = landmarks['nose_tip_idx']
 
     # --- Eye outer corner estimate (both sides) ---
     # Anthropometric approximation: outer eye corner sits laterally offset from the
-    # nasion, at roughly the same height, slightly anterior. We project an estimate
-    # point outward from the nasion and snap it to the nearest surface vertex.
+    # nasion, slightly posterior (backward in Y) and inferior (down in Z).
     nasion_pt = vertices[landmarks['nasion_idx']]
     for side, sign in (('right', 1), ('left', -1)):
         try:
-            est = nasion_pt + [sign * extents[0] * 0.17, extents[1] * 0.02, -extents[2] * 0.02]
-            _, _, idx = trimesh.proximity.closest_point(mesh, [est])
-            landmarks[f'eye_outer_corner_{side}_idx'] = idx[0]
+            est = nasion_pt + [sign * extents[0] * 0.17, -extents[1] * 0.08, -extents[2] * 0.03]
+            # Pure numpy calculation to find closest vertex
+            idx = int(np.argmin(np.linalg.norm(vertices - est, axis=1)))
+            landmarks[f'eye_outer_corner_{side}_idx'] = idx
         except Exception:
             landmarks[f'eye_outer_corner_{side}_idx'] = landmarks['nasion_idx']
 
@@ -300,23 +301,23 @@ def _estimate_mesh_scale_factor(mesh):
 
     Real 3D scans can be exported in meters, centimeters, or millimeters. We detect the scale
     heuristically based on the bounding box size:
-    1. Meters (max_extent < 1.0) -> Convert to cm by multiplying by 100.0
-    2. Millimeters (max_extent > 50) -> Convert to cm by multiplying by 0.1
-    3. Centimeters (otherwise) -> Keep as-is (scale factor of 1.0)
+    1. Meters (max_extent < 1.0, typically ~0.36m): scale factor is 65.8 to get real cm
+    2. Millimeters (max_extent > 50, typically ~360mm): scale factor is 0.0658 to get real cm
+    3. KeenTools default units / decimeters (otherwise, typically ~3.6): scale factor is 6.58 to get real cm
     """
     extents = np.asarray(mesh.bounding_box.extents, dtype=float)
     if extents.size == 0:
-        return 1.0
+        return 6.58
 
     max_extent = float(np.max(extents))
     if max_extent <= 0:
-        return 1.0
+        return 6.58
 
     if max_extent < 1.0:
-        return 100.0
+        return 65.8
     elif max_extent > 50.0:
-        return 0.1
-    return 1.0
+        return 0.0658
+    return 6.58
 
 
 def perform_all_measurements(mesh):
