@@ -43,3 +43,40 @@ class MeasurementRegressionTests(SimpleTestCase):
         self.assertNotEqual(small_measurements.get('head_width'), large_measurements.get('head_width'))
         self.assertNotEqual(small_measurements.get('head_height'), large_measurements.get('head_height'))
         self.assertNotEqual(small_measurements.get('head_length'), large_measurements.get('head_length'))
+
+    def test_circumference_slicing_on_cylinder(self):
+        # Create a cylinder representing a head shape
+        cylinder = trimesh.creation.cylinder(radius=0.08, height=0.3, sections=64)
+        # Ensure it has dense geometry (> 100 vertices)
+        self.assertTrue(len(cylinder.vertices) > 100)
+        
+        measurements = perform_all_measurements(cylinder)
+        self.assertIn('head_circumference_A', measurements)
+        self.assertGreater(measurements['head_circumference_A'], 0.0)
+
+    def test_calibration_fails_gracefully_on_invalid_image(self):
+        from scans.processing.calibration import estimate_physical_scale_from_photo
+        # Non-existent file
+        self.assertIsNone(estimate_physical_scale_from_photo("non_existent_file.jpg"))
+        
+        # Blank image (no face)
+        import tempfile
+        import cv2
+        import os
+        blank_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp:
+            cv2.imwrite(temp.name, blank_img)
+            temp_name = temp.name
+            
+        try:
+            self.assertIsNone(estimate_physical_scale_from_photo(temp_name))
+        finally:
+            if os.path.exists(temp_name):
+                os.remove(temp_name)
+
+    def test_perform_measurements_fallback(self):
+        cylinder = trimesh.creation.cylinder(radius=0.08, height=0.3, sections=64)
+        # Verify it runs without error with non-existent image
+        measurements = perform_all_measurements(cylinder, front_image_path="invalid_image.jpg")
+        self.assertIn('head_circumference_A', measurements)
+        self.assertGreater(measurements['head_circumference_A'], 0.0)

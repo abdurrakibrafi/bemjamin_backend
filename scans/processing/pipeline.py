@@ -196,14 +196,26 @@ def run_full_scan_pipeline(scan_id):
     if not api_key: raise PipelineError("Key missing")
 
     image_paths = []
-    if scan.image_front: image_paths.append(scan.image_front.path)
-    for img in scan.extra_images.all(): image_paths.append(img.image.path)
-    
-    if len(image_paths) < 1: raise PipelineError("No images")
-
+    temp_files = []
     obj_temp_path = None 
 
     try:
+        if scan.image_front:
+            ext = os.path.splitext(scan.image_front.name)[1] or '.jpg'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_f:
+                temp_f.write(scan.image_front.read())
+                image_paths.append(temp_f.name)
+                temp_files.append(temp_f.name)
+
+        for img in scan.extra_images.all():
+            ext = os.path.splitext(img.image.name)[1] or '.jpg'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_f:
+                temp_f.write(img.image.read())
+                image_paths.append(temp_f.name)
+                temp_files.append(temp_f.name)
+
+        if len(image_paths) < 1: raise PipelineError("No images")
+
         count = len(image_paths)
         
         avatar_id, urls = _init_avatar(api_key, count)
@@ -220,7 +232,7 @@ def run_full_scan_pipeline(scan_id):
         logger.info("Measuring OBJ...")
         mesh = trimesh.load(obj_temp_path, file_type='obj', force='mesh')
         from ..mesh_measurements import perform_all_measurements
-        measurements = perform_all_measurements(mesh)
+        measurements = perform_all_measurements(mesh, front_image_path=image_paths[0])
         
         _download_glb_for_display(scan, api_key, avatar_id)
         
@@ -233,3 +245,9 @@ def run_full_scan_pipeline(scan_id):
     finally:
         if obj_temp_path and os.path.exists(obj_temp_path):
             os.remove(obj_temp_path)
+        for path in temp_files:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception as e:
+                    logger.warning(f"Could not remove temporary image file {path}: {e}")

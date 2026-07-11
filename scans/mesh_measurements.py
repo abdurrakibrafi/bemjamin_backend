@@ -319,7 +319,7 @@ def _estimate_mesh_scale_factor(mesh):
     return 6.58
 
 
-def perform_all_measurements(mesh):
+def perform_all_measurements(mesh, front_image_path=None):
     print("--- Performing detailed measurements ---")
     try:
         mesh = _align_mesh_to_principal_axes(mesh)
@@ -327,6 +327,22 @@ def perform_all_measurements(mesh):
         extents = mesh.bounding_box.extents
 
         scale_factor = _estimate_mesh_scale_factor(mesh)
+
+        if front_image_path is not None:
+            try:
+                from scans.processing.calibration import estimate_physical_scale_from_photo
+                physical_ocular = estimate_physical_scale_from_photo(front_image_path)
+                if physical_ocular is not None:
+                    vertices = mesh.vertices
+                    left_eye = vertices[landmarks['eye_outer_corner_left_idx']]
+                    right_eye = vertices[landmarks['eye_outer_corner_right_idx']]
+                    mesh_ocular = float(np.linalg.norm(left_eye - right_eye))
+                    if mesh_ocular > 0:
+                        ai_scale = physical_ocular / mesh_ocular
+                        print(f"--- AI Calibration: scale factor updated from {scale_factor:.4f} to {ai_scale:.4f} ---")
+                        scale_factor = ai_scale
+            except Exception as cal_err:
+                print(f"AI Calibration Error: {cal_err}")
 
         vertices = mesh.vertices
         if len(vertices) > 100:
@@ -348,9 +364,19 @@ def perform_all_measurements(mesh):
             head_length = extents[2] * scale_factor
             head_height = extents[1] * scale_factor
 
-        # A: head circumference at eyebrow level (ellipse approximation)
-        a, b = head_width / 2, head_length / 2
-        head_circumference_A = np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b)))
+        # A: head circumference at eyebrow level (using planar cross-section)
+        try:
+            nasion_pt = vertices[landmarks['nasion_idx']]
+            slice_3d = mesh.section(plane_origin=[0, float(nasion_pt[1]), 0], plane_normal=[0, 1, 0])
+            if slice_3d is not None:
+                raw_circumference_A = float(slice_3d.length)
+                head_circumference_A = raw_circumference_A * scale_factor
+            else:
+                a, b = head_width / 2, head_length / 2
+                head_circumference_A = np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b)))
+        except Exception:
+            a, b = head_width / 2, head_length / 2
+            head_circumference_A = np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b)))
 
         # B: nasion -> occipital prominence (geodesic, over the top)
         raw_B = _calculate_surface_distance(mesh, landmarks['nasion_idx'], landmarks['back_of_head_idx'])
