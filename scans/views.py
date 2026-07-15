@@ -35,16 +35,13 @@ class ScanViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         scan = self.get_object()
         
-        max_wait = 30
-        waited = 0
-        
-        while scan.status == Scan.Status.PROCESSING and waited < max_wait:
+        while scan.status == Scan.Status.PROCESSING:
             time.sleep(1)
             scan.refresh_from_db()
-            waited += 1
         
         serializer = self.get_serializer(scan)
         return Response(serializer.data)
+    
     @transaction.atomic # BEST PRACTICE FIX: Ensure Scan creation is atomic before task is deferred
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
