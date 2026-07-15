@@ -12,8 +12,6 @@ from .pagination import ScanListPagination
 from .filters import ScanDateFilter
 from dashboard.pagination import CustomDashboardPagination
 from .pdf_generator import generate_scan_pdf 
-import time
-
 
 class ScanViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -32,16 +30,6 @@ class ScanViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
-    def retrieve(self, request, *args, **kwargs):
-        scan = self.get_object()
-        
-        while scan.status == Scan.Status.PROCESSING:
-            time.sleep(1)
-            scan.refresh_from_db()
-        
-        serializer = self.get_serializer(scan)
-        return Response(serializer.data)
-    
     @transaction.atomic # BEST PRACTICE FIX: Ensure Scan creation is atomic before task is deferred
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
