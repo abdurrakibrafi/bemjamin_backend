@@ -1,3 +1,5 @@
+import json
+import os
 from django.apps import AppConfig
 import firebase_admin
 from firebase_admin import credentials
@@ -16,7 +18,13 @@ class CoreConfig(AppConfig):
                     print("Warning: FCM_CREDENTIALS path is not set in settings. Firebase not initialized.")
                     return
                 
-                cred = credentials.Certificate(cred_path)
+                if isinstance(cred_path, dict):
+                    cred = credentials.Certificate(cred_path)
+                elif isinstance(cred_path, str) and cred_path.strip().startswith('{'):
+                    cred_dict = json.loads(cred_path)
+                    cred = credentials.Certificate(cred_dict)
+                else:
+                    cred = credentials.Certificate(cred_path)
                 
                 firebase_admin.initialize_app(cred)
                 print("Firebase Admin SDK initialized successfully.")
