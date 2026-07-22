@@ -178,7 +178,7 @@ FCM_DJANGO_SETTINGS = {
     "FCM_SERVER_KEY": "[Legacy] Please use FCM_CREDENTIALS instead.",
     "ONE_DEVICE_PER_USER": False,
     "DELETE_INACTIVE_DEVICES": True,
-    "FCM_CREDENTIALS": str(BASE_DIR / 'serviceAccountKey.json'),
+    "FCM_CREDENTIALS": os.getenv('FIREBASE_SERVICE_ACCOUNT_PATH', str(BASE_DIR / 'serviceAccountKey.json')),
 }
 
 
