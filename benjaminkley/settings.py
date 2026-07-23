@@ -173,12 +173,29 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
 CORS_ALLOWED_ORIGINS = CSRF_TRUSTED_ORIGINS
 CORS_ALLOW_CREDENTIALS = True
 
+import json
+import tempfile
+
+FIREBASE_SERVICE_ACCOUNT_PATH = os.getenv('FIREBASE_SERVICE_ACCOUNT_PATH')
+
+if FIREBASE_SERVICE_ACCOUNT_PATH:
+    try:
+        _fcm_creds_dict = json.loads(FIREBASE_SERVICE_ACCOUNT_PATH)
+        _fcm_creds_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        json.dump(_fcm_creds_dict, _fcm_creds_file)
+        _fcm_creds_file.close()
+        FCM_CREDENTIALS_PATH = _fcm_creds_file.name
+    except Exception:
+        FCM_CREDENTIALS_PATH = FIREBASE_SERVICE_ACCOUNT_PATH
+else:
+    FCM_CREDENTIALS_PATH = str(BASE_DIR / 'serviceAccountKey.json')
+
 FCM_DJANGO_SETTINGS = {
     "APP_VERBOSE_NAME": "Benjamin Kley App",
     "FCM_SERVER_KEY": "[Legacy] Please use FCM_CREDENTIALS instead.",
     "ONE_DEVICE_PER_USER": False,
     "DELETE_INACTIVE_DEVICES": True,
-    "FCM_CREDENTIALS": os.getenv('FIREBASE_SERVICE_ACCOUNT_PATH', str(BASE_DIR / 'serviceAccountKey.json')),
+    "FCM_CREDENTIALS": FCM_CREDENTIALS_PATH,
 }
 
 

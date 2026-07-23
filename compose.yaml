@@ -28,7 +28,7 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
-    command: ["/app/docker-entrypoint.sh", "migrate"]
+    command: [ "/app/docker-entrypoint.sh", "migrate" ]
     deploy:
       resources:
         limits:
@@ -42,7 +42,6 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - ./media:/app/media
-      - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -50,9 +49,9 @@ services:
         condition: service_healthy
       db-migrator:
         condition: service_completed_successfully
-    command: ["/app/docker-entrypoint.sh", "web"]
+    command: [ "/app/docker-entrypoint.sh", "web" ]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/admin/login/"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/admin/login/" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -73,7 +72,6 @@ services:
     env_file: .env
     volumes:
       - ./media:/app/media
-      - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -81,9 +79,9 @@ services:
         condition: service_healthy
       db-migrator:
         condition: service_completed_successfully
-    command: ["/app/docker-entrypoint.sh", "celery-worker"]
+    command: [ "/app/docker-entrypoint.sh", "celery-worker" ]
     healthcheck:
-      test: ["CMD", "celery", "-A", "benjaminkley", "inspect", "ping"]
+      test: [ "CMD", "celery", "-A", "benjaminkley", "inspect", "ping" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -106,7 +104,7 @@ services:
         condition: service_healthy
       db-migrator:
         condition: service_completed_successfully
-    command: ["/app/docker-entrypoint.sh", "celery-beat"]
+    command: [ "/app/docker-entrypoint.sh", "celery-beat" ]
     deploy:
       resources:
         limits:
@@ -129,7 +127,7 @@ services:
       - RESERVE_POOL_SIZE=5
       - AUTH_TYPE=scram-sha-256
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U ${DB_USER}"]
+      test: [ "CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U ${DB_USER}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -146,7 +144,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
