@@ -16,4 +16,4 @@ media
 .cache
 .continue
 celerybeat-schedule
-.agent_task.md 
+agent_task.md
