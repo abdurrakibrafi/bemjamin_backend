@@ -17,7 +17,7 @@ class ScanCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Scan
-        fields = ('name', 'notes', 'custom_field', 'image_front', 'extra_images')
+        fields = ('name', 'notes', 'custom_field', 'image_front', 'extra_images', 'calibration_type', 'calibration_value')
 
     def _validate_image_file(self, image):
         MAX_SIZE = 50 * 1024 * 1024
@@ -40,7 +40,7 @@ class ScanCreateSerializer(serializers.ModelSerializer):
         
         total_images = 1 + len(extras)
         if total_images < 5:
-            raise serializers.ValidationError(f"You uploaded {total_images} images. Minimum 5 required.")
+            raise serializers.ValidationError(f"You uploaded {total_images} images. Minimum 5 required (Recommended 8-10 for full 360° coverage).")
         
         for img in extras:
             self._validate_image_file(img)
@@ -71,17 +71,31 @@ class ScanDetailSerializer(serializers.ModelSerializer):
     Head_Length = serializers.CharField(source='head_length')
     Ear_to_Ear = serializers.CharField(source='ear_to_ear')
     Eye_to_Eye = serializers.CharField(source='eye_to_eye')
+    Head_Circumference_A = serializers.CharField(source='head_circumference_A')
+    Forehead_to_Back_B = serializers.CharField(source='forehead_to_back_B')
+    Cross_Measurement_C = serializers.CharField(source='cross_measurement_C')
+    Under_Chin_D = serializers.CharField(source='under_chin_D')
+    Eyebrow_to_Earlobe_E = serializers.CharField(source='eyebrow_to_earlobe_E')
+    Eye_Corner_to_Ear_F = serializers.CharField(source='eye_corner_to_ear_F')
+    Ear_Height_G = serializers.CharField(source='ear_height_G')
+    Ear_Width_H = serializers.CharField(source='ear_width_H')
     Notes = serializers.CharField(source='notes')
     Custom_Fit = serializers.CharField(source='custom_field')
+    calibration_type = serializers.CharField()
+    calibration_value = serializers.DecimalField(max_digits=5, decimal_places=2)
 
     class Meta:
         model = Scan
         fields = (
             'scan_id', 'Name', 'Date_of_Scan', 'status',
             'scan_images', 'reconstructed_3d_head', 'pdf_report_url',
+            'calibration_type', 'calibration_value',
             'Head_Width', 'Head_Length', 'Ear_to_Ear', 'Eye_to_Eye',
+            'Head_Circumference_A', 'Forehead_to_Back_B', 'Cross_Measurement_C', 'Under_Chin_D',
+            'Eyebrow_to_Earlobe_E', 'Eye_Corner_to_Ear_F', 'Ear_Height_G', 'Ear_Width_H',
             'Notes', 'Custom_Fit'
         )
+
 
     def get_scan_images(self, obj):
         request = self.context.get('request')

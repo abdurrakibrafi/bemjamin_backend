@@ -16,9 +16,17 @@ class Scan(models.Model):
     custom_field = models.CharField(max_length=255, blank=True, null=True)
     image_front = models.ImageField(upload_to='scans/inputs/') 
 
+    class CalibrationType(models.TextChoices):
+        USER_CIRCUMFERENCE = 'USER_CIRCUMFERENCE', 'User Head Circumference (cm)'
+        USER_IPD = 'USER_IPD', 'User IPD (cm)'
+        AUTO_ESTIMATE = 'AUTO_ESTIMATE', 'Auto Estimate'
+
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PROCESSING)
     failure_reason = models.TextField(null=True, blank=True)
     processed_3d_model = models.FileField(upload_to='scans/outputs/', null=True, blank=True)
+
+    calibration_type = models.CharField(max_length=30, choices=CalibrationType.choices, default=CalibrationType.USER_CIRCUMFERENCE)
+    calibration_value = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     
     eye_to_eye = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     ear_to_ear = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)

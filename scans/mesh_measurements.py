@@ -319,21 +319,72 @@ def _estimate_mesh_scale_factor(mesh):
     return 6.58
 
 
-def perform_all_measurements(mesh, front_image_path=None):
+def _calculate_sagittal_surface_distance(mesh, start_idx, end_idx):
+    """
+    Calculate 3D surface arc length from start_idx (Nasion/Eyebrows) over the top of the head
+    to end_idx (Occipital Prominence) by sectioning the mesh along the sagittal plane (X=0).
+    """
+    try:
+        slice_3d = mesh.section(plane_origin=[0, 0, 0], plane_normal=[1, 0, 0])
+        if slice_3d is not None and hasattr(slice_3d, 'vertices') and len(slice_3d.vertices) > 0:
+            vertices_3d = slice_3d.vertices
+            nasion_y = mesh.vertices[start_idx][1]
+            upper_pts = vertices_3d[vertices_3d[:, 1] >= (nasion_y - 2.0)]
+            if len(upper_pts) > 2:
+                sorted_pts = upper_pts[np.argsort(upper_pts[:, 2])]
+                arc_length = float(np.sum(np.linalg.norm(np.diff(sorted_pts, axis=0), axis=1)))
+                if arc_length > 0:
+                    return arc_length
+    except Exception:
+        pass
+    return _calculate_surface_distance(mesh, start_idx, end_idx)
+
+
+def perform_all_measurements(mesh, front_image_path=None, calibration_type=None, calibration_value=None):
     print("--- Performing detailed measurements ---")
     try:
         mesh = _align_mesh_to_principal_axes(mesh)
         landmarks = _find_anatomical_landmarks(mesh)
         extents = mesh.bounding_box.extents
+        vertices = mesh.vertices
+
+        # Measure raw 3D head circumference A first
+        raw_circumference_A = 0.0
+        try:
+            nasion_pt = vertices[landmarks['nasion_idx']]
+            slice_3d = mesh.section(plane_origin=[0, float(nasion_pt[1]), 0], plane_normal=[0, 1, 0])
+            if slice_3d is not None and hasattr(slice_3d, 'length') and slice_3d.length > 0:
+                raw_circumference_A = float(slice_3d.length)
+        except Exception:
+            pass
+
+        if raw_circumference_A <= 0:
+            raw_a, raw_b = extents[0] / 2.0, extents[2] / 2.0
+            if raw_a > 0 and raw_b > 0:
+                raw_circumference_A = float(np.pi * (3 * (raw_a + raw_b) - np.sqrt((3 * raw_a + raw_b) * (raw_a + 3 * raw_b))))
 
         scale_factor = _estimate_mesh_scale_factor(mesh)
 
-        if front_image_path is not None:
+
+        # 1. User manual calibration reference (User input confirmed by client)
+        if calibration_value is not None and float(calibration_value) > 0:
+            cal_val = float(calibration_value)
+            if calibration_type == 'USER_CIRCUMFERENCE' or calibration_type is None:
+                if raw_circumference_A > 0:
+                    scale_factor = cal_val / raw_circumference_A
+                    print(f"--- User Calibration (Circumference={cal_val}cm): scale factor set to {scale_factor:.4f} ---")
+            elif calibration_type == 'USER_IPD':
+                left_eye = vertices[landmarks['eye_outer_corner_left_idx']]
+                right_eye = vertices[landmarks['eye_outer_corner_right_idx']]
+                mesh_ipd = float(np.linalg.norm(left_eye - right_eye))
+                if mesh_ipd > 0:
+                    scale_factor = cal_val / mesh_ipd
+                    print(f"--- User Calibration (IPD={cal_val}cm): scale factor set to {scale_factor:.4f} ---")
+        elif front_image_path is not None:
             try:
                 from scans.processing.calibration import estimate_physical_scale_from_photo
                 physical_ocular = estimate_physical_scale_from_photo(front_image_path)
                 if physical_ocular is not None:
-                    vertices = mesh.vertices
                     left_eye = vertices[landmarks['eye_outer_corner_left_idx']]
                     right_eye = vertices[landmarks['eye_outer_corner_right_idx']]
                     mesh_ocular = float(np.linalg.norm(left_eye - right_eye))
@@ -344,7 +395,6 @@ def perform_all_measurements(mesh, front_image_path=None):
             except Exception as cal_err:
                 print(f"AI Calibration Error: {cal_err}")
 
-        vertices = mesh.vertices
         if len(vertices) > 100:
             top_y = vertices[landmarks['top_of_head_idx'], 1]
             chin_y = vertices[landmarks['chin_idx'], 1]
@@ -364,27 +414,21 @@ def perform_all_measurements(mesh, front_image_path=None):
             head_length = extents[2] * scale_factor
             head_height = extents[1] * scale_factor
 
-        # A: head circumference at eyebrow level (using planar cross-section)
-        try:
-            nasion_pt = vertices[landmarks['nasion_idx']]
-            slice_3d = mesh.section(plane_origin=[0, float(nasion_pt[1]), 0], plane_normal=[0, 1, 0])
-            if slice_3d is not None:
-                raw_circumference_A = float(slice_3d.length)
-                head_circumference_A = raw_circumference_A * scale_factor
-            else:
-                a, b = head_width / 2, head_length / 2
-                head_circumference_A = np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b)))
-        except Exception:
+        # A: head circumference at eyebrow level
+        if raw_circumference_A > 0:
+            head_circumference_A = raw_circumference_A * scale_factor
+        else:
             a, b = head_width / 2, head_length / 2
             head_circumference_A = np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b)))
 
-        # B: nasion -> occipital prominence (geodesic, over the top)
-        raw_B = _calculate_surface_distance(mesh, landmarks['nasion_idx'], landmarks['back_of_head_idx'])
+        # B: nasion -> occipital prominence (geodesic sagittal surface arc over the top of head)
+        raw_B = _calculate_sagittal_surface_distance(mesh, landmarks['nasion_idx'], landmarks['back_of_head_idx'])
         forehead_to_back_B = raw_B * scale_factor
 
         # C: left side -> right side, across the top (geodesic)
         raw_C = _calculate_surface_distance(mesh, landmarks['left_side_idx'], landmarks['right_side_idx'])
         cross_measurement_C = raw_C * scale_factor
+
 
         # D: under the chin, side to side (A-reference-line -> chin -> opposite A-reference-line)
         raw_D_left = _calculate_surface_distance(mesh, landmarks['left_side_idx'], landmarks['chin_idx'])

@@ -198,7 +198,12 @@ def generate_scan_pdf(scan_object):
         except Exception:
             pass
 
+    elements.append(Spacer(1, 0.2*inch))
+    attribution_style = ParagraphStyle(name='Attribution', parent=styles['Normal'], fontSize=8, textColor=colors.gray)
+    elements.append(Paragraph("Measurement head protection — ATO FORM GmbH specification reference (https://www.youtube.com/watch?v=xlsrhFhhmh0)", attribution_style))
+
     doc.build(elements, onFirstPage=_header_footer, onLaterPages=_header_footer)
+
     
     buffer.seek(0)
     return buffer

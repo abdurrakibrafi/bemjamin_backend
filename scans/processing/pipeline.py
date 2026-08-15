@@ -232,7 +232,13 @@ def run_full_scan_pipeline(scan_id):
         logger.info("Measuring OBJ...")
         mesh = trimesh.load(obj_temp_path, file_type='obj', force='mesh')
         from ..mesh_measurements import perform_all_measurements
-        measurements = perform_all_measurements(mesh, front_image_path=image_paths[0])
+        cal_val = float(scan.calibration_value) if scan.calibration_value else None
+        measurements = perform_all_measurements(
+            mesh,
+            front_image_path=image_paths[0],
+            calibration_type=scan.calibration_type,
+            calibration_value=cal_val
+        )
         
         _download_glb_for_display(scan, api_key, avatar_id)
         

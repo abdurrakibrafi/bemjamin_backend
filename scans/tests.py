@@ -80,3 +80,15 @@ class MeasurementRegressionTests(SimpleTestCase):
         measurements = perform_all_measurements(cylinder, front_image_path="invalid_image.jpg")
         self.assertIn('head_circumference_A', measurements)
         self.assertGreater(measurements['head_circumference_A'], 0.0)
+
+    def test_user_calibration_scales_mesh_correctly(self):
+        cylinder = trimesh.creation.cylinder(radius=0.08, height=0.3, sections=64)
+        target_circumference = 56.0
+        measurements = perform_all_measurements(
+            cylinder,
+            calibration_type='USER_CIRCUMFERENCE',
+            calibration_value=target_circumference
+        )
+        self.assertIn('head_circumference_A', measurements)
+        self.assertEqual(measurements['head_circumference_A'], target_circumference)
+
