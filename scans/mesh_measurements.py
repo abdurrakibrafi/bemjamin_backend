@@ -238,6 +238,63 @@ def _estimate_mesh_scale_factor(mesh):
     return 6.58          # KeenTools decimeter default -> cm
 
 
+def symmetrize_3d_mesh(mesh, alpha=0.70):
+    """
+    Apply bilateral anatomical symmetry regularization across sagittal plane (X=0).
+    Pairs left and right vertices, smoothing out single-sided perspective bulges or swelling.
+    """
+    try:
+        vertices = mesh.vertices.copy()
+        left_idx = np.where(vertices[:, 0] < -0.005)[0]
+        right_idx = np.where(vertices[:, 0] > 0.005)[0]
+
+        if len(left_idx) == 0 or len(right_idx) == 0:
+            return mesh
+
+        left_pts = vertices[left_idx]
+        right_pts = vertices[right_idx]
+        target_mirror = np.column_stack((np.abs(left_pts[:, 0]), left_pts[:, 1], left_pts[:, 2]))
+
+        chunk_size = 1000
+        paired_right = np.zeros(len(left_idx), dtype=int)
+        min_dists = np.zeros(len(left_idx), dtype=float)
+
+        for i in range(0, len(left_idx), chunk_size):
+            chunk = target_mirror[i:i+chunk_size]
+            dists = np.sum((chunk[:, np.newaxis, :] - right_pts[np.newaxis, :, :]) ** 2, axis=2)
+            min_idx = np.argmin(dists, axis=1)
+            paired_right[i:i+chunk_size] = right_idx[min_idx]
+            min_dists[i:i+chunk_size] = np.sqrt(dists[np.arange(len(chunk)), min_idx])
+
+        valid_mask = min_dists < 0.15
+        valid_left = left_idx[valid_mask]
+        valid_right = paired_right[valid_mask]
+
+        for l, r in zip(valid_left, valid_right):
+            vl = vertices[l]
+            vr = vertices[r]
+            
+            avg_abs_x = 0.5 * (abs(vl[0]) + abs(vr[0]))
+            avg_y = 0.5 * (vl[1] + vr[1])
+            avg_z = 0.5 * (vl[2] + vr[2])
+            
+            vertices[l, 0] = (1 - alpha) * vl[0] + alpha * (-avg_abs_x)
+            vertices[l, 1] = (1 - alpha) * vl[1] + alpha * avg_y
+            vertices[l, 2] = (1 - alpha) * vl[2] + alpha * avg_z
+            
+            vertices[r, 0] = (1 - alpha) * vr[0] + alpha * (avg_abs_x)
+            vertices[r, 1] = (1 - alpha) * vr[1] + alpha * avg_y
+            vertices[r, 2] = (1 - alpha) * vr[2] + alpha * avg_z
+
+        mid_idx = np.where(np.abs(vertices[:, 0]) <= 0.005)[0]
+        vertices[mid_idx, 0] = 0.0
+
+        mesh.vertices = vertices
+    except Exception as e:
+        logger.warning(f"Symmetry regularization exception: {e}")
+    return mesh
+
+
 def perform_all_measurements(mesh, front_image_path=None, calibration_type=None, calibration_value=None):
     """
     Compute all 14 biometric and head protection dimensions strictly from 3D geometry.
@@ -246,6 +303,7 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
     print("--- Performing pure 3D geometry measurements ---")
     try:
         mesh = _align_mesh_to_principal_axes(mesh)
+        mesh = symmetrize_3d_mesh(mesh, alpha=0.70)
         landmarks = _find_anatomical_landmarks(mesh)
         extents = mesh.bounding_box.extents
         vertices = mesh.vertices

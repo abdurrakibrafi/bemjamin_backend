@@ -26,3 +26,4 @@ networkx
 drf_spectacular
 ujson==5.9.0
 django-redis==5.4.0
+opencv-python-headless==4.10.0.84

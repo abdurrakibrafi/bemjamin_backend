@@ -47,24 +47,104 @@ def _init_avatar(api_key, img_count):
     data = response.json()
     return data.get("avatar_id"), data.get("img_urls")
 
+import cv2
+import numpy as np
 from PIL import Image, ImageOps
 
 def _preprocess_and_save_temp(image_field):
-    """Normalize image orientation via EXIF and save as a high quality JPEG temp file."""
+    """
+    Normalize image:
+    1. Orient via EXIF transpose.
+    2. Standardize to canonical portrait container with subtle padding if aspect ratio deviates.
+    3. Apply adaptive contrast & lighting equalization (CLAHE) to balance single-sided shadows/flash.
+    """
     temp_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
     try:
         with Image.open(image_field) as img:
-            # Transpose orientation based on EXIF tag (critical for portrait mobile photos)
             img = ImageOps.exif_transpose(img)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
+            
+            # Standardize aspect ratio to portrait container if cropped square or landscape
+            w, h = img.size
+            if w > h or (w / h) > 0.85:
+                target_h = max(h, int(w * 1.33))
+                target_w = int(target_h * 0.75)
+                img = ImageOps.pad(img, (target_w, target_h), color=(255, 255, 255))
+
+            # Apply CLAHE on L-channel to balance harsh directional shadows/highlights
+            img_np = np.array(img)
+            lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            cl = clahe.apply(l)
+            limg = cv2.merge((cl, a, b))
+            enhanced_np = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
+            img = Image.fromarray(enhanced_np)
+
             img.save(temp_f.name, format="JPEG", quality=95)
-    except Exception:
-        # Fallback to direct raw write if PIL fails
+    except Exception as e:
+        logger.warning(f"Preprocessing fallback: {e}")
         image_field.seek(0)
         temp_f.write(image_field.read())
     temp_f.close()
     return temp_f.name
+
+def symmetrize_3d_mesh(mesh, alpha=0.70):
+    """
+    Apply bilateral anatomical symmetry regularization across sagittal plane (X=0).
+    Pairs left and right vertices, smoothing out single-sided perspective bulges or swelling.
+    """
+    try:
+        vertices = mesh.vertices.copy()
+        left_idx = np.where(vertices[:, 0] < -0.005)[0]
+        right_idx = np.where(vertices[:, 0] > 0.005)[0]
+
+        if len(left_idx) == 0 or len(right_idx) == 0:
+            return mesh
+
+        left_pts = vertices[left_idx]
+        right_pts = vertices[right_idx]
+        target_mirror = np.column_stack((np.abs(left_pts[:, 0]), left_pts[:, 1], left_pts[:, 2]))
+
+        chunk_size = 1000
+        paired_right = np.zeros(len(left_idx), dtype=int)
+        min_dists = np.zeros(len(left_idx), dtype=float)
+
+        for i in range(0, len(left_idx), chunk_size):
+            chunk = target_mirror[i:i+chunk_size]
+            dists = np.sum((chunk[:, np.newaxis, :] - right_pts[np.newaxis, :, :]) ** 2, axis=2)
+            min_idx = np.argmin(dists, axis=1)
+            paired_right[i:i+chunk_size] = right_idx[min_idx]
+            min_dists[i:i+chunk_size] = np.sqrt(dists[np.arange(len(chunk)), min_idx])
+
+        valid_mask = min_dists < 0.15
+        valid_left = left_idx[valid_mask]
+        valid_right = paired_right[valid_mask]
+
+        for l, r in zip(valid_left, valid_right):
+            vl = vertices[l]
+            vr = vertices[r]
+            
+            avg_abs_x = 0.5 * (abs(vl[0]) + abs(vr[0]))
+            avg_y = 0.5 * (vl[1] + vr[1])
+            avg_z = 0.5 * (vl[2] + vr[2])
+            
+            vertices[l, 0] = (1 - alpha) * vl[0] + alpha * (-avg_abs_x)
+            vertices[l, 1] = (1 - alpha) * vl[1] + alpha * avg_y
+            vertices[l, 2] = (1 - alpha) * vl[2] + alpha * avg_z
+            
+            vertices[r, 0] = (1 - alpha) * vr[0] + alpha * (avg_abs_x)
+            vertices[r, 1] = (1 - alpha) * vr[1] + alpha * avg_y
+            vertices[r, 2] = (1 - alpha) * vr[2] + alpha * avg_z
+
+        mid_idx = np.where(np.abs(vertices[:, 0]) <= 0.005)[0]
+        vertices[mid_idx, 0] = 0.0
+
+        mesh.vertices = vertices
+    except Exception as e:
+        logger.warning(f"Symmetry regularization exception: {e}")
+    return mesh
 
 def _get_image_focal_length(image_path):
     """Extract 35mm equivalent focal length from image EXIF if available."""
@@ -208,6 +288,14 @@ def _download_obj_for_math(api_key, avatar_id):
     temp = tempfile.NamedTemporaryFile(delete=False, suffix=".obj")
     temp.write(file_content)
     temp.close()
+
+    try:
+        mesh = trimesh.load(temp.name, file_type='obj', force='mesh')
+        mesh = symmetrize_3d_mesh(mesh, alpha=0.70)
+        mesh.export(temp.name)
+    except Exception as e:
+        logger.warning(f"OBJ symmetry regularization warning: {e}")
+
     return temp.name
 
 def _download_glb_for_display(scan, api_key, avatar_id):
@@ -225,6 +313,18 @@ def _download_glb_for_display(scan, api_key, avatar_id):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".glb") as temp_file:
         temp_file.write(file_content)
         temp_path = temp_file.name
+
+    try:
+        scene = trimesh.load(temp_path, file_type='glb')
+        if isinstance(scene, trimesh.Scene):
+            for name, geom in scene.geometry.items():
+                symmetrize_3d_mesh(geom, alpha=0.70)
+            scene.export(temp_path)
+        elif isinstance(scene, trimesh.Trimesh):
+            symmetrize_3d_mesh(scene, alpha=0.70)
+            scene.export(temp_path)
+    except Exception as e:
+        logger.warning(f"GLB symmetry regularization warning: {e}")
     
     with open(temp_path, 'rb') as f:
         scan.processed_3d_model.save(f"{scan.id}_model.glb", File(f), save=True)
