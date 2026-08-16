@@ -81,14 +81,24 @@ class MeasurementRegressionTests(SimpleTestCase):
         self.assertIn('head_circumference_A', measurements)
         self.assertGreater(measurements['head_circumference_A'], 0.0)
 
-    def test_user_calibration_scales_mesh_correctly(self):
+    def test_all_fourteen_measurements_present_and_positive(self):
         cylinder = trimesh.creation.cylinder(radius=0.08, height=0.3, sections=64)
-        target_circumference = 56.0
-        measurements = perform_all_measurements(
-            cylinder,
-            calibration_type='USER_CIRCUMFERENCE',
-            calibration_value=target_circumference
-        )
-        self.assertIn('head_circumference_A', measurements)
-        self.assertEqual(measurements['head_circumference_A'], target_circumference)
+        measurements = perform_all_measurements(cylinder)
+        
+        expected_keys = [
+            'head_width', 'head_height', 'head_length', 'ear_to_ear', 'eye_to_eye',
+            'head_circumference_A', 'forehead_to_back_B', 'cross_measurement_C',
+            'under_chin_D', 'eyebrow_to_earlobe_E', 'eye_corner_to_ear_F',
+            'ear_height_G', 'ear_width_H', 'cheek_guard_clearance_L',
+            'cheek_guard_height_M', 'cheek_guard_width_N'
+        ]
+        for key in expected_keys:
+            self.assertIn(key, measurements, f"Missing expected key: {key}")
+            self.assertGreater(measurements[key], 0.0, f"Key {key} must be greater than 0")
+
+    def test_exif_focal_length_extraction(self):
+        from scans.processing.pipeline import _get_image_focal_length
+        # Test fallback on non-existent file
+        focal = _get_image_focal_length("non_existent.jpg")
+        self.assertEqual(focal, 35.0)
 

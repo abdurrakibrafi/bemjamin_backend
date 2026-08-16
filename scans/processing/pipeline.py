@@ -47,6 +47,45 @@ def _init_avatar(api_key, img_count):
     data = response.json()
     return data.get("avatar_id"), data.get("img_urls")
 
+from PIL import Image, ImageOps
+
+def _preprocess_and_save_temp(image_field):
+    """Normalize image orientation via EXIF and save as a high quality JPEG temp file."""
+    temp_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    try:
+        with Image.open(image_field) as img:
+            # Transpose orientation based on EXIF tag (critical for portrait mobile photos)
+            img = ImageOps.exif_transpose(img)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img.save(temp_f.name, format="JPEG", quality=95)
+    except Exception:
+        # Fallback to direct raw write if PIL fails
+        image_field.seek(0)
+        temp_f.write(image_field.read())
+    temp_f.close()
+    return temp_f.name
+
+def _get_image_focal_length(image_path):
+    """Extract 35mm equivalent focal length from image EXIF if available."""
+    try:
+        with Image.open(image_path) as img:
+            exif = img.getexif()
+            if exif:
+                # 41989: FocalLengthIn35mmFilm
+                focal_35 = exif.get(41989)
+                if focal_35 and float(focal_35) > 10:
+                    return float(focal_35)
+                # 37386: FocalLength
+                focal_raw = exif.get(37386)
+                if focal_raw:
+                    val = float(focal_raw[0]) / float(focal_raw[1]) if isinstance(focal_raw, tuple) else float(focal_raw)
+                    if val > 10:
+                        return val
+    except Exception:
+        pass
+    return 35.0  # Standard human portrait focal length baseline
+
 def _upload_photo(image_path, upload_url):
     logger.info(f"--- Step 2: Uploading {os.path.basename(image_path)} ---")
     if not os.path.exists(image_path):
@@ -62,20 +101,23 @@ def _upload_photo(image_path, upload_url):
     except Exception as e:
         raise PipelineError(f"Upload failed: {e}")
 
-def _start_reconstruction(api_key, avatar_id, img_count):
+def _start_reconstruction(api_key, avatar_id, image_paths):
     url = _make_url(f"{avatar_id}/process")
     headers = _get_api_headers(api_key)
     headers['Content-Type'] = 'application/json'
     
+    # Try dynamic focal length estimation from images
+    focal_values = [_get_image_focal_length(p) for p in image_paths]
+    
     payload = {
         "focal_length_type": {
             "focal_length_type": "manual",
-            "focal_length_values": [28.0] * img_count
+            "focal_length_values": focal_values
         },
         "expressions_enabled": False
     }
 
-    logger.info(f"--- Step 3: Start Reconstruction ---")
+    logger.info(f"--- Step 3: Start Reconstruction (focals: {focal_values}) ---")
     response = requests.post(url, headers=headers, json=payload, timeout=30)
     
     if response.status_code not in [200, 400]: 
@@ -201,18 +243,14 @@ def run_full_scan_pipeline(scan_id):
 
     try:
         if scan.image_front:
-            ext = os.path.splitext(scan.image_front.name)[1] or '.jpg'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_f:
-                temp_f.write(scan.image_front.read())
-                image_paths.append(temp_f.name)
-                temp_files.append(temp_f.name)
+            temp_path = _preprocess_and_save_temp(scan.image_front)
+            image_paths.append(temp_path)
+            temp_files.append(temp_path)
 
         for img in scan.extra_images.all():
-            ext = os.path.splitext(img.image.name)[1] or '.jpg'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_f:
-                temp_f.write(img.image.read())
-                image_paths.append(temp_f.name)
-                temp_files.append(temp_f.name)
+            temp_path = _preprocess_and_save_temp(img.image)
+            image_paths.append(temp_path)
+            temp_files.append(temp_path)
 
         if len(image_paths) < 1: raise PipelineError("No images")
 
@@ -223,7 +261,7 @@ def run_full_scan_pipeline(scan_id):
         for path, url in zip(image_paths, urls):
             _upload_photo(path, url)
             
-        _start_reconstruction(api_key, avatar_id, count)
+        _start_reconstruction(api_key, avatar_id, image_paths)
         
         _poll_for_completion(api_key, avatar_id)
         
