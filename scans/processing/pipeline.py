@@ -5,6 +5,7 @@ import tempfile
 import trimesh
 import traceback
 import logging
+from scipy.spatial import cKDTree
 from django.conf import settings
 from django.core.files import File
 from urllib.parse import urljoin
@@ -65,12 +66,9 @@ def _preprocess_and_save_temp(image_field):
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            # Standardize aspect ratio to portrait container if cropped square or landscape
-            w, h = img.size
-            if w > h or (w / h) > 0.85:
-                target_h = max(h, int(w * 1.33))
-                target_w = int(target_h * 0.75)
-                img = ImageOps.pad(img, (target_w, target_h), color=(255, 255, 255))
+            # Standardize all images to identical canonical portrait container (576 x 1024)
+            # This completely eliminates FOV and aspect ratio mismatches between front and side images
+            img = ImageOps.pad(img, (576, 1024), color=(255, 255, 255))
 
             # Apply CLAHE on L-channel to balance harsh directional shadows/highlights
             img_np = np.array(img)
@@ -94,6 +92,7 @@ def symmetrize_3d_mesh(mesh, alpha=0.70):
     """
     Apply bilateral anatomical symmetry regularization across sagittal plane (X=0).
     Pairs left and right vertices, smoothing out single-sided perspective bulges or swelling.
+    Uses cKDTree for fast and low-memory nearest-neighbor pairing.
     """
     try:
         vertices = mesh.vertices.copy()
@@ -107,16 +106,9 @@ def symmetrize_3d_mesh(mesh, alpha=0.70):
         right_pts = vertices[right_idx]
         target_mirror = np.column_stack((np.abs(left_pts[:, 0]), left_pts[:, 1], left_pts[:, 2]))
 
-        chunk_size = 1000
-        paired_right = np.zeros(len(left_idx), dtype=int)
-        min_dists = np.zeros(len(left_idx), dtype=float)
-
-        for i in range(0, len(left_idx), chunk_size):
-            chunk = target_mirror[i:i+chunk_size]
-            dists = np.sum((chunk[:, np.newaxis, :] - right_pts[np.newaxis, :, :]) ** 2, axis=2)
-            min_idx = np.argmin(dists, axis=1)
-            paired_right[i:i+chunk_size] = right_idx[min_idx]
-            min_dists[i:i+chunk_size] = np.sqrt(dists[np.arange(len(chunk)), min_idx])
+        tree = cKDTree(right_pts)
+        min_dists, min_idx = tree.query(target_mirror, k=1)
+        paired_right = right_idx[min_idx]
 
         valid_mask = min_dists < 0.15
         valid_left = left_idx[valid_mask]
@@ -186,18 +178,27 @@ def _start_reconstruction(api_key, avatar_id, image_paths):
     headers = _get_api_headers(api_key)
     headers['Content-Type'] = 'application/json'
     
-    # Try dynamic focal length estimation from images
+    # Extract focal lengths if EXIF is preserved; otherwise use auto estimation
     focal_values = [_get_image_focal_length(p) for p in image_paths]
+    has_valid_exif_focals = all(f is not None and f > 15 for f in focal_values)
     
-    payload = {
-        "focal_length_type": {
-            "focal_length_type": "manual",
-            "focal_length_values": focal_values
-        },
-        "expressions_enabled": False
-    }
+    if has_valid_exif_focals:
+        payload = {
+            "focal_length_type": {
+                "focal_length_type": "manual",
+                "focal_length_values": focal_values
+            },
+            "expressions_enabled": False
+        }
+    else:
+        payload = {
+            "focal_length_type": {
+                "focal_length_type": "auto"
+            },
+            "expressions_enabled": False
+        }
 
-    logger.info(f"--- Step 3: Start Reconstruction (focals: {focal_values}) ---")
+    logger.info(f"--- Step 3: Start Reconstruction (payload: {payload}) ---")
     response = requests.post(url, headers=headers, json=payload, timeout=30)
     
     if response.status_code not in [200, 400]: 
@@ -288,14 +289,6 @@ def _download_obj_for_math(api_key, avatar_id):
     temp = tempfile.NamedTemporaryFile(delete=False, suffix=".obj")
     temp.write(file_content)
     temp.close()
-
-    try:
-        mesh = trimesh.load(temp.name, file_type='obj', force='mesh')
-        mesh = symmetrize_3d_mesh(mesh, alpha=0.70)
-        mesh.export(temp.name)
-    except Exception as e:
-        logger.warning(f"OBJ symmetry regularization warning: {e}")
-
     return temp.name
 
 def _download_glb_for_display(scan, api_key, avatar_id):
@@ -313,18 +306,6 @@ def _download_glb_for_display(scan, api_key, avatar_id):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".glb") as temp_file:
         temp_file.write(file_content)
         temp_path = temp_file.name
-
-    try:
-        scene = trimesh.load(temp_path, file_type='glb')
-        if isinstance(scene, trimesh.Scene):
-            for name, geom in scene.geometry.items():
-                symmetrize_3d_mesh(geom, alpha=0.70)
-            scene.export(temp_path)
-        elif isinstance(scene, trimesh.Trimesh):
-            symmetrize_3d_mesh(scene, alpha=0.70)
-            scene.export(temp_path)
-    except Exception as e:
-        logger.warning(f"GLB symmetry regularization warning: {e}")
     
     with open(temp_path, 'rb') as f:
         scan.processed_3d_model.save(f"{scan.id}_model.glb", File(f), save=True)

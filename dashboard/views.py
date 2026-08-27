@@ -1,4 +1,3 @@
-from httpx import request
 from rest_framework import viewsets, filters, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -191,6 +190,10 @@ class ScanManagementViewSet(viewsets.ModelViewSet):
         scan = self.get_object()
         scan.status = Scan.Status.PROCESSING
         scan.save()
+        
+        from scans.tasks import process_scan_and_save
+        process_scan_and_save.delay(str(scan.id))
+        
         create_and_send_notification(
             user=scan.user,
             title="Re-Scan Requested",

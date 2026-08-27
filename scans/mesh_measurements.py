@@ -2,6 +2,7 @@ import trimesh
 import numpy as np
 import traceback
 import logging
+from scipy.spatial import cKDTree
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +243,7 @@ def symmetrize_3d_mesh(mesh, alpha=0.70):
     """
     Apply bilateral anatomical symmetry regularization across sagittal plane (X=0).
     Pairs left and right vertices, smoothing out single-sided perspective bulges or swelling.
+    Uses cKDTree for O(N log N) nearest-neighbor query, avoiding large memory spikes.
     """
     try:
         vertices = mesh.vertices.copy()
@@ -255,16 +257,9 @@ def symmetrize_3d_mesh(mesh, alpha=0.70):
         right_pts = vertices[right_idx]
         target_mirror = np.column_stack((np.abs(left_pts[:, 0]), left_pts[:, 1], left_pts[:, 2]))
 
-        chunk_size = 1000
-        paired_right = np.zeros(len(left_idx), dtype=int)
-        min_dists = np.zeros(len(left_idx), dtype=float)
-
-        for i in range(0, len(left_idx), chunk_size):
-            chunk = target_mirror[i:i+chunk_size]
-            dists = np.sum((chunk[:, np.newaxis, :] - right_pts[np.newaxis, :, :]) ** 2, axis=2)
-            min_idx = np.argmin(dists, axis=1)
-            paired_right[i:i+chunk_size] = right_idx[min_idx]
-            min_dists[i:i+chunk_size] = np.sqrt(dists[np.arange(len(chunk)), min_idx])
+        tree = cKDTree(right_pts)
+        min_dists, min_idx = tree.query(target_mirror, k=1)
+        paired_right = right_idx[min_idx]
 
         valid_mask = min_dists < 0.15
         valid_left = left_idx[valid_mask]
