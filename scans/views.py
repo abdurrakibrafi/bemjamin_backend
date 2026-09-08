@@ -75,3 +75,33 @@ class ScanViewSet(viewsets.ModelViewSet):
             content_type='application/pdf'
         )
         return response
+
+    @action(detail=True, methods=['post'], url_path='recalculate')
+    def recalculate(self, request, pk=None):
+        scan = self.get_object()
+        if not scan.processed_3d_model:
+            return Response({'error': 'No 3D model available for this scan.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from scans.management.commands.recalculate_measurements import load_mesh_from_scan
+        from scans.mesh_measurements import perform_all_measurements
+
+        mesh = load_mesh_from_scan(scan)
+        if mesh is None:
+            return Response({'error': 'Failed to load 3D model.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            cal_val = float(scan.calibration_value) if scan.calibration_value else None
+            new_measurements = perform_all_measurements(
+                mesh,
+                calibration_type=scan.calibration_type,
+                calibration_value=cal_val
+            )
+            for key, val in new_measurements.items():
+                if hasattr(scan, key):
+                    setattr(scan, key, val)
+            scan.save(update_fields=list(new_measurements.keys()))
+
+            serializer = ScanDetailSerializer(scan, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': f'Failed to recalculate: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
