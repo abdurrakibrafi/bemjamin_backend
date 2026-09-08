@@ -5,7 +5,9 @@ import tempfile
 import trimesh
 import traceback
 import logging
-from scipy.spatial import cKDTree
+import cv2
+import numpy as np
+from PIL import Image, ImageOps
 from django.conf import settings
 from django.core.files import File
 from urllib.parse import urljoin
@@ -48,9 +50,6 @@ def _init_avatar(api_key, img_count):
     data = response.json()
     return data.get("avatar_id"), data.get("img_urls")
 
-import cv2
-import numpy as np
-from PIL import Image, ImageOps
 
 def _preprocess_and_save_temp(image_field):
     """
@@ -88,55 +87,6 @@ def _preprocess_and_save_temp(image_field):
     temp_f.close()
     return temp_f.name
 
-def symmetrize_3d_mesh(mesh, alpha=0.70):
-    """
-    Apply bilateral anatomical symmetry regularization across sagittal plane (X=0).
-    Pairs left and right vertices, smoothing out single-sided perspective bulges or swelling.
-    Uses cKDTree for fast and low-memory nearest-neighbor pairing.
-    """
-    try:
-        vertices = mesh.vertices.copy()
-        left_idx = np.where(vertices[:, 0] < -0.005)[0]
-        right_idx = np.where(vertices[:, 0] > 0.005)[0]
-
-        if len(left_idx) == 0 or len(right_idx) == 0:
-            return mesh
-
-        left_pts = vertices[left_idx]
-        right_pts = vertices[right_idx]
-        target_mirror = np.column_stack((np.abs(left_pts[:, 0]), left_pts[:, 1], left_pts[:, 2]))
-
-        tree = cKDTree(right_pts)
-        min_dists, min_idx = tree.query(target_mirror, k=1)
-        paired_right = right_idx[min_idx]
-
-        valid_mask = min_dists < 0.15
-        valid_left = left_idx[valid_mask]
-        valid_right = paired_right[valid_mask]
-
-        for l, r in zip(valid_left, valid_right):
-            vl = vertices[l]
-            vr = vertices[r]
-            
-            avg_abs_x = 0.5 * (abs(vl[0]) + abs(vr[0]))
-            avg_y = 0.5 * (vl[1] + vr[1])
-            avg_z = 0.5 * (vl[2] + vr[2])
-            
-            vertices[l, 0] = (1 - alpha) * vl[0] + alpha * (-avg_abs_x)
-            vertices[l, 1] = (1 - alpha) * vl[1] + alpha * avg_y
-            vertices[l, 2] = (1 - alpha) * vl[2] + alpha * avg_z
-            
-            vertices[r, 0] = (1 - alpha) * vr[0] + alpha * (avg_abs_x)
-            vertices[r, 1] = (1 - alpha) * vr[1] + alpha * avg_y
-            vertices[r, 2] = (1 - alpha) * vr[2] + alpha * avg_z
-
-        mid_idx = np.where(np.abs(vertices[:, 0]) <= 0.005)[0]
-        vertices[mid_idx, 0] = 0.0
-
-        mesh.vertices = vertices
-    except Exception as e:
-        logger.warning(f"Symmetry regularization exception: {e}")
-    return mesh
 
 def _get_image_focal_length(image_path):
     """Extract 35mm equivalent focal length from image EXIF if available."""
