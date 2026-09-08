@@ -2,7 +2,6 @@
 .env
 __pycache__
 postman.json
-commands
 setting.py
 settings.json
 postman2.json
