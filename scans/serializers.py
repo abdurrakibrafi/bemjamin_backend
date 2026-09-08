@@ -19,6 +19,19 @@ class ScanCreateSerializer(serializers.ModelSerializer):
         model = Scan
         fields = ('name', 'notes', 'custom_field', 'image_front', 'extra_images', 'calibration_type', 'calibration_value')
 
+    def to_internal_value(self, data):
+        if hasattr(data, '_mutable') and not data._mutable:
+            data = data.copy()
+        elif not isinstance(data, dict) and hasattr(data, 'copy'):
+            data = data.copy()
+
+        alt_keys = ['head_circumference', 'head_circumference_A', 'circumference', 'user_circumference', 'calibrationValue', 'manual_circumference']
+        for k in alt_keys:
+            if k in data and ('calibration_value' not in data or not data['calibration_value']):
+                data['calibration_value'] = data[k]
+                break
+        return super().to_internal_value(data)
+
     def _validate_image_file(self, image):
         MAX_SIZE = 50 * 1024 * 1024
         if image.size > MAX_SIZE:

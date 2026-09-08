@@ -52,6 +52,7 @@ class Command(BaseCommand):
         parser.add_argument('--scan-id', type=str, help='Specific Scan UUID to recalculate')
         parser.add_argument('--limit', type=int, default=5, help='Limit number of recent scans (default 5)')
         parser.add_argument('--all', action='store_true', help='Recalculate all completed scans')
+        parser.add_argument('--cal-val', type=float, help='Override or provide calibration value in cm (e.g. --cal-val 60)')
         parser.add_argument('--save', action='store_true', help='Save newly computed measurements to database (default is dry-run)')
 
     def handle(self, *args, **options):
@@ -94,12 +95,17 @@ class Command(BaseCommand):
             ('eye_to_eye',           'Eye to Eye'),
         ]
 
+        override_cal = options.get('cal_val')
+
         for scan in scans:
+            cal_val = override_cal if override_cal is not None else (float(scan.calibration_value) if scan.calibration_value else None)
+            cal_type = 'USER_CIRCUMFERENCE' if override_cal is not None else scan.calibration_type
+
             self.stdout.write(self.style.MIGRATE_HEADING(f"═" * 70))
             self.stdout.write(self.style.MIGRATE_HEADING(
                 f"Scan: '{scan.name}' (ID: {scan.id})\n"
                 f"User: {scan.user.username if scan.user else 'N/A'} | Created: {scan.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-                f"Calibration: {scan.calibration_type} = {scan.calibration_value} cm"
+                f"Calibration: {cal_type} = {cal_val} cm {'(OVERRIDDEN via --cal-val)' if override_cal is not None else ''}"
             ))
             self.stdout.write(self.style.MIGRATE_HEADING(f"─" * 70))
 
@@ -108,11 +114,10 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ❌ Could not load 3D mesh from {scan.processed_3d_model}"))
                 continue
 
-            cal_val = float(scan.calibration_value) if scan.calibration_value else None
             try:
                 new_measurements = perform_all_measurements(
                     mesh,
-                    calibration_type=scan.calibration_type,
+                    calibration_type=cal_type,
                     calibration_value=cal_val
                 )
             except Exception as e:
@@ -140,10 +145,15 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {label:<40} | {old_str:>10} | {new_str:>10} | {diff_str:>8}")
 
             if save_to_db:
+                fields_to_update = list(new_measurements.keys())
                 for key, val in new_measurements.items():
                     if hasattr(scan, key):
                         setattr(scan, key, val)
-                scan.save(update_fields=list(new_measurements.keys()))
+                if override_cal is not None:
+                    scan.calibration_value = override_cal
+                    scan.calibration_type = 'USER_CIRCUMFERENCE'
+                    fields_to_update.extend(['calibration_value', 'calibration_type'])
+                scan.save(update_fields=fields_to_update)
                 self.stdout.write(self.style.SUCCESS(f"\n  ✅ Successfully updated Scan {scan.id} in database!"))
             else:
                 self.stdout.write(self.style.NOTICE(f"\n  ℹ️ Dry-run mode: Pass --save to persist these new values to database."))
