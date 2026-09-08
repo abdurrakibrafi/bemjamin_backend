@@ -5,7 +5,10 @@ import tempfile
 import trimesh
 import traceback
 import logging
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 import numpy as np
 from PIL import Image, ImageOps
 from django.conf import settings
@@ -70,14 +73,17 @@ def _preprocess_and_save_temp(image_field):
             img = ImageOps.pad(img, (576, 1024), color=(255, 255, 255))
 
             # Apply CLAHE on L-channel to balance harsh directional shadows/highlights
-            img_np = np.array(img)
-            lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
-            l, a, b = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            cl = clahe.apply(l)
-            limg = cv2.merge((cl, a, b))
-            enhanced_np = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
-            img = Image.fromarray(enhanced_np)
+            if cv2 is not None:
+                img_np = np.array(img)
+                lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+                l, a, b = cv2.split(lab)
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                cl = clahe.apply(l)
+                limg = cv2.merge((cl, a, b))
+                enhanced_np = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
+                img = Image.fromarray(enhanced_np)
+            else:
+                img = ImageOps.autocontrast(img)
 
             img.save(temp_f.name, format="JPEG", quality=95)
     except Exception as e:

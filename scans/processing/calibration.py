@@ -1,5 +1,8 @@
 import os
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 import numpy as np
 import urllib.request
 import logging
@@ -37,6 +40,10 @@ def estimate_physical_scale_from_photo(image_path: str) -> float:
         (which is roughly 9.2 cm based on average face proportions, i.e., IPD of 6.3cm * 1.46 ratio),
         or None if detection fails.
     """
+    if cv2 is None:
+        logger.warning("OpenCV (cv2) is not available; skipping photo calibration.")
+        return None
+
     face_xml, eye_xml = _ensure_cascade_files()
     if not os.path.exists(face_xml) or not os.path.exists(eye_xml):
         logger.error("Haar cascade XML files are missing.")
