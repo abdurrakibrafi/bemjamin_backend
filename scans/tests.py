@@ -98,7 +98,45 @@ class MeasurementRegressionTests(SimpleTestCase):
 
     def test_exif_focal_length_extraction(self):
         from scans.processing.pipeline import _get_image_focal_length
-        # Test fallback on non-existent file
+        # Test fallback on non-existent file returns None for KeenTools auto focal estimation
         focal = _get_image_focal_length("non_existent.jpg")
-        self.assertEqual(focal, 35.0)
+        self.assertIsNone(focal)
+
+    def test_image_preprocessing_preserves_aspect_ratio_and_resizes_1600(self):
+        from scans.processing.pipeline import _preprocess_and_save_temp
+        from PIL import Image
+        import io, os
+
+        # Create a non-standard aspect ratio test image (e.g., 2400 x 1800, 4:3)
+        img = Image.new('RGB', (2400, 1800), color=(128, 128, 128))
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format='JPEG')
+        img_bytes.seek(0)
+
+        saved_path = _preprocess_and_save_temp(img_bytes)
+        try:
+            with Image.open(saved_path) as processed:
+                w, h = processed.size
+                # Max dimension must be <= 1600
+                self.assertLessEqual(max(w, h), 1600)
+                # Aspect ratio must be preserved (4:3 ratio -> 1600 x 1200)
+                self.assertEqual(w, 1600)
+                self.assertEqual(h, 1200)
+        finally:
+            if os.path.exists(saved_path):
+                os.remove(saved_path)
+
+    def test_calibration_value_range_validation(self):
+        from scans.serializers import ScanCreateSerializer
+        serializer = ScanCreateSerializer()
+
+        # Valid range (40 - 70 cm)
+        self.assertEqual(serializer.validate_calibration_value(56.0), 56.0)
+
+        # Out of range (< 40 or > 70 cm)
+        from rest_framework import serializers
+        with self.assertRaises(serializers.ValidationError):
+            serializer.validate_calibration_value(25.0)
+        with self.assertRaises(serializers.ValidationError):
+            serializer.validate_calibration_value(85.0)
 

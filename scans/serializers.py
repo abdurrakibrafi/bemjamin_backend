@@ -47,6 +47,15 @@ class ScanCreateSerializer(serializers.ModelSerializer):
         self._validate_image_file(value)
         return value
 
+    def validate_calibration_value(self, value):
+        if value is not None:
+            val_float = float(value)
+            if val_float < 40.0 or val_float > 70.0:
+                raise serializers.ValidationError(
+                    f"Head circumference ({val_float:.1f} cm) is outside the valid range (40.0 cm to 70.0 cm)."
+                )
+        return value
+
     def validate(self, attrs):
         front = attrs.get('image_front')
         extras = attrs.get('extra_images', [])

@@ -37,9 +37,10 @@ def _calculate_surface_distance(mesh, start_idx, end_idx):
     return float(np.linalg.norm(mesh.vertices[start_idx] - mesh.vertices[end_idx]))
 
 
-def _find_anatomical_landmarks(mesh):
+def _find_anatomical_landmarks(mesh, front_image_path=None):
     """
-    Detect key anatomical facial and cranial landmarks directly from 3D mesh geometry.
+    Detect key anatomical facial and cranial landmarks directly from 3D mesh geometry,
+    refined by 2D facial detection (MediaPipe / Haar) when a front photograph is available.
     Coordinates: X (width, +/-), Y (height, up/down), Z (depth, front/back).
     """
     vertices = mesh.vertices
@@ -65,6 +66,15 @@ def _find_anatomical_landmarks(mesh):
         return landmarks
 
     top_y = vertices[landmarks['top_of_head_idx'], 1]
+
+    # Optional 2D landmark assistance from front image
+    lm2d = None
+    if front_image_path:
+        try:
+            from scans.processing.calibration import detect_facial_landmarks_2d
+            lm2d = detect_facial_landmarks_2d(front_image_path)
+        except Exception:
+            pass
 
     # 1. Nose Tip (Pronasale): Most anterior point (max Z) in upper-central face
     y_min_nose = top_y - extents[1] * 0.55
@@ -92,14 +102,19 @@ def _find_anatomical_landmarks(mesh):
     )
     chin_candidates = np.where(chin_mask)[0]
     if len(chin_candidates) > 0:
-        # Optimize combination of lowest Y and most forward Z
         chin_local = np.argmax(vertices[chin_candidates, 2] - 1.2 * vertices[chin_candidates, 1])
         landmarks['chin_idx'] = int(chin_candidates[chin_local])
 
     chin_y = vertices[landmarks['chin_idx'], 1]
 
     # 3. Nasion / Glabella: Depressed region above nose bridge between eye sockets
-    nasion_est = vertices[landmarks['nose_tip_idx']] + [0, extents[1] * 0.08, -extents[2] * 0.08]
+    if lm2d and 'glabella_norm' in lm2d:
+        # Refine vertical position with 2D detection
+        face_h = top_y - chin_y
+        g_y_target = chin_y + face_h * (1.0 - lm2d['glabella_norm'][1])
+        nasion_est = np.array([0.0, g_y_target, vertices[landmarks['nose_tip_idx'], 2] - extents[2] * 0.08])
+    else:
+        nasion_est = vertices[landmarks['nose_tip_idx']] + [0, extents[1] * 0.08, -extents[2] * 0.08]
     nasion_idx = int(np.argmin(np.linalg.norm(vertices - nasion_est, axis=1)))
     landmarks['nasion_idx'] = nasion_idx
 
@@ -225,34 +240,34 @@ def _find_ear_landmarks(mesh, landmarks, side='right'):
 
 def _estimate_mesh_scale_factor(mesh):
     """
-    Determine raw mesh unit scaling factor (e.g. decimeters, meters, millimeters).
-    This is used as a fallback when no user calibration is available.
+    Determine raw mesh unit scaling factor to convert native mesh units into centimeters.
+    Standard metric unit detection:
+      - Meters (max_extent < 1.0, e.g. ~0.25m): 1m = 100cm -> factor = 100.0
+      - Decimeters (max_extent 1.0 - 15.0, e.g. ~2.5dm): 1dm = 10cm -> factor = 10.0
+      - Centimeters (max_extent 15.0 - 50.0, e.g. ~25cm): factor = 1.0
+      - Millimeters (max_extent > 50.0, e.g. ~250mm): 1mm = 0.1cm -> factor = 0.1
     """
     extents = np.asarray(mesh.bounding_box.extents, dtype=float)
     if extents.size == 0 or np.max(extents) <= 0:
-        return 6.58
+        return 1.0
 
     max_extent = float(np.max(extents))
     if max_extent < 1.0:
-        return 65.8      # Meters -> cm
+        return 100.0     # Meters -> cm
     elif max_extent > 50.0:
-        return 0.0658    # Millimeters -> cm
-    return 6.58          # KeenTools decimeter default -> cm
+        return 0.1       # Millimeters -> cm
+    elif 15.0 <= max_extent <= 50.0:
+        return 1.0       # Already Centimeters
+    else:
+        return 10.0      # Decimeters (1.0 to <15.0) -> cm
 
 
-def _measure_head_circumference_raw(mesh):
+def _measure_head_circumference_raw(mesh, target_y=None):
     """
     Robustly measure the head circumference from the mesh in its CURRENT units.
 
-    This function is called both BEFORE scaling (to derive the calibration scale factor)
-    and AFTER scaling (to verify the output circumference in cm).
-
-    Strategy:
-      1. mesh.section() at 5 candidate Y levels → use the LARGEST single closed entity
-         (avoids summing outer skull + internal mesh artifacts, which was the previous bug)
-      2. Fallback: scipy ConvexHull of cross-section vertices in the XZ plane
-         (hull.area = perimeter in 2D, works for non-manifold meshes)
-      3. Last resort: Ramanujan ellipse approximation with correct semi-axes = extents / 2
+    If target_y is specified (eyebrow / glabella plane A-line), it slices specifically
+    at that anatomical level instead of searching candidate levels that sweep across the ears.
     """
     vertices = mesh.vertices
     extents = mesh.extents
@@ -267,9 +282,13 @@ def _measure_head_circumference_raw(mesh):
     best_circ = 0.0
 
     # Strategy 1: horizontal cross-section at candidate levels
-    # Head circumference tape sits at parietal/forehead level (~50-70% from bottom)
-    for y_frac in [0.60, 0.55, 0.65, 0.50, 0.70]:
-        y_level = min_y + head_h * y_frac
+    if target_y is not None:
+        candidate_levels = [target_y, target_y + head_h * 0.015, target_y - head_h * 0.015]
+    else:
+        # Standard forehead / eyebrow plane sits at ~58-62% from bottom
+        candidate_levels = [min_y + head_h * 0.60, min_y + head_h * 0.58, min_y + head_h * 0.62]
+
+    for y_level in candidate_levels:
         try:
             slice_3d = mesh.section(
                 plane_origin=[0, y_level, 0],
@@ -278,14 +297,11 @@ def _measure_head_circumference_raw(mesh):
             if slice_3d is None:
                 continue
 
-            # KEY FIX: iterate each entity individually and keep ONLY the longest one.
-            # The old code used slice_3d.length which is the SUM of ALL entities
-            # (outer skull + internal artifacts), corrupting the scale factor.
+            # Keep ONLY the longest single closed entity (the outer cranial contour)
             if hasattr(slice_3d, 'entities') and len(slice_3d.entities) > 0:
                 for entity in slice_3d.entities:
                     try:
                         pts = slice_3d.vertices[entity.points]
-                        # Close the loop by appending the first point
                         closed = np.vstack([pts, pts[0:1]])
                         seg_len = float(np.sum(
                             np.linalg.norm(np.diff(closed, axis=0), axis=1)
@@ -301,24 +317,22 @@ def _measure_head_circumference_raw(mesh):
         logger.info(f"Circumference measured via mesh.section(): {best_circ:.6f} (native units)")
         return best_circ
 
-    # Strategy 2: convex hull of parietal-band vertices (XZ plane)
+    # Strategy 2: convex hull at target Y level
     try:
         from scipy.spatial import ConvexHull
-        y_level = min_y + head_h * 0.60
-        band = vertices[np.abs(vertices[:, 1] - y_level) < head_h * 0.05]
+        ref_y = target_y if target_y is not None else (min_y + head_h * 0.60)
+        band = vertices[np.abs(vertices[:, 1] - ref_y) < head_h * 0.03]
         if len(band) >= 4:
             hull = ConvexHull(band[:, [0, 2]])
-            # For a 2D ConvexHull in scipy: .area = perimeter, .volume = enclosed area
             circ = float(hull.area)
             logger.info(f"Circumference measured via ConvexHull fallback: {circ:.6f} (native units)")
             return circ
     except Exception:
         pass
 
-    # Strategy 3: Ramanujan ellipse approximation with CORRECT semi-axes (extents / 2)
-    # NOTE: previous code incorrectly used 0.46 * extents[0] and 0.48 * extents[2]
-    a = float(extents[0]) / 2.0  # semi-axis (half of full width)
-    b = float(extents[2]) / 2.0  # semi-axis (half of full depth)
+    # Strategy 3: Ramanujan ellipse approximation with correct semi-axes (extents / 2)
+    a = float(extents[0]) / 2.0
+    b = float(extents[2]) / 2.0
     if a > 0 and b > 0:
         circ = float(np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b))))
         logger.info(f"Circumference measured via Ramanujan fallback: {circ:.6f} (native units)")
@@ -404,16 +418,22 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         # STEP 1 — Determine the calibration scale factor (native units → cm)
         # ═══════════════════════════════════════════════════════════════════
 
-        # Start with a unit-based estimate (decimeters / meters / mm → cm)
-        calibration_scale = _estimate_mesh_scale_factor(mesh)
-        logger.info(f"Unit-estimate scale factor: {calibration_scale:.6f}")
+        # Start with standard metric unit conversion (m / dm / cm / mm -> cm)
+        initial_metric_scale = _estimate_mesh_scale_factor(mesh)
+        calibration_scale = initial_metric_scale
+        logger.info(f"Unit-estimate metric scale factor: {initial_metric_scale:.6f}")
+
+        # Preliminary landmarks to locate eyebrow level for circumference A
+        _lm0 = _find_anatomical_landmarks(mesh, front_image_path=front_image_path)
+        init_eyebrow_y = mesh.vertices[_lm0['nasion_idx'], 1]
+        raw_circ = _measure_head_circumference_raw(mesh, target_y=init_eyebrow_y)
+        candidate_circ_cm = raw_circ * initial_metric_scale
 
         if calibration_value is not None and float(calibration_value) > 0:
             cal_val  = float(calibration_value)
             cal_type = (calibration_type or 'USER_CIRCUMFERENCE').strip()
 
-            if cal_type == 'USER_CIRCUMFERENCE':
-                raw_circ = _measure_head_circumference_raw(mesh)
+            if cal_type in ('USER_CIRCUMFERENCE', 'AUTO_ESTIMATE'):
                 if raw_circ > 0:
                     calibration_scale = cal_val / raw_circ
                     logger.info(
@@ -427,7 +447,6 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
                     )
 
             elif cal_type == 'USER_IPD':
-                _lm0 = _find_anatomical_landmarks(mesh)
                 lv = mesh.vertices[_lm0['eye_outer_corner_left_idx']]
                 rv = mesh.vertices[_lm0['eye_outer_corner_right_idx']]
                 raw_ipd = float(np.linalg.norm(lv - rv))
@@ -440,31 +459,29 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
                 else:
                     logger.warning("IPD measurement returned 0; keeping unit-estimate scale.")
 
-            # AUTO_ESTIMATE with a provided value: treat value as circumference reference
-            elif cal_type == 'AUTO_ESTIMATE':
-                raw_circ = _measure_head_circumference_raw(mesh)
-                if raw_circ > 0:
-                    calibration_scale = cal_val / raw_circ
-                    logger.info(
-                        f"AUTO_ESTIMATE with circumference fallback: raw={raw_circ:.6f}, "
-                        f"target={cal_val} cm → scale={calibration_scale:.6f}"
-                    )
-
-        elif front_image_path is not None:
-            # AUTO_ESTIMATE without a numeric value: derive scale from the photo
-            try:
-                from scans.processing.calibration import estimate_physical_scale_from_photo
-                physical_ocular = estimate_physical_scale_from_photo(front_image_path)
-                if physical_ocular is not None and physical_ocular > 0:
-                    _lm0 = _find_anatomical_landmarks(mesh)
-                    lv = mesh.vertices[_lm0['eye_outer_corner_left_idx']]
-                    rv = mesh.vertices[_lm0['eye_outer_corner_right_idx']]
-                    raw_ocular = float(np.linalg.norm(lv - rv))
-                    if raw_ocular > 0:
-                        calibration_scale = physical_ocular / raw_ocular
-                        logger.info(f"Photo-based calibration: scale={calibration_scale:.6f}")
-            except Exception as cal_err:
-                logger.warning(f"Photo calibration error: {cal_err}")
+        else:
+            # AUTO PATH: No user taped circumference provided.
+            # Check if KeenTools metric 3D model circumference is within realistic human head range (~44-68 cm).
+            # If so, PRESERVE KeenTools metric scale directly. Do NOT overwrite with 9.2cm average IPD!
+            if 44.0 <= candidate_circ_cm <= 68.0:
+                logger.info(
+                    f"KeenTools metric 3D head circumference ({candidate_circ_cm:.1f} cm) is within realistic "
+                    f"human range (44-68 cm). Preserving KeenTools metric scale: {calibration_scale:.6f}"
+                )
+            elif front_image_path is not None:
+                # Only use photo IPD estimation as a fallback if metric scale produced an unrealistic head
+                try:
+                    from scans.processing.calibration import estimate_physical_scale_from_photo
+                    physical_ocular = estimate_physical_scale_from_photo(front_image_path)
+                    if physical_ocular is not None and physical_ocular > 0:
+                        lv = mesh.vertices[_lm0['eye_outer_corner_left_idx']]
+                        rv = mesh.vertices[_lm0['eye_outer_corner_right_idx']]
+                        raw_ocular = float(np.linalg.norm(lv - rv))
+                        if raw_ocular > 0:
+                            calibration_scale = physical_ocular / raw_ocular
+                            logger.info(f"Fallback photo-based calibration: scale={calibration_scale:.6f}")
+                except Exception as cal_err:
+                    logger.warning(f"Photo calibration error: {cal_err}")
 
         logger.info(f"Final calibration scale factor applied to mesh: {calibration_scale:.6f}")
 
@@ -477,7 +494,7 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         # ═══════════════════════════════════════════════════════════════════
         # STEP 3 — Re-find landmarks from the SCALED mesh (everything in cm)
         # ═══════════════════════════════════════════════════════════════════
-        landmarks = _find_anatomical_landmarks(mesh)
+        landmarks = _find_anatomical_landmarks(mesh, front_image_path=front_image_path)
         vertices  = mesh.vertices
         extents   = mesh.bounding_box.extents
 
@@ -486,8 +503,9 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         # ═══════════════════════════════════════════════════════════════════
 
         # ── Measurement A: Head Circumference ────────────────────────────
-        # Re-measured from the scaled mesh; should ≈ calibration_value.
-        head_circumference_A = _measure_head_circumference_raw(mesh)
+        # Measured specifically on the eyebrow/nasion plane (A-line), NOT across the ears!
+        eyebrow_y = float(vertices[landmarks['nasion_idx'], 1])
+        head_circumference_A = _measure_head_circumference_raw(mesh, target_y=eyebrow_y)
         if head_circumference_A <= 0:
             # Emergency: guarantee the output equals the user's input
             if calibration_value is not None and float(calibration_value) > 0:

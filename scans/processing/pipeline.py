@@ -68,9 +68,11 @@ def _preprocess_and_save_temp(image_field):
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            # Standardize all images to identical canonical portrait container (576 x 1024)
-            # This completely eliminates FOV and aspect ratio mismatches between front and side images
-            img = ImageOps.pad(img, (576, 1024), color=(255, 255, 255))
+            # Preserve original image aspect ratio. Only downscale if larger than 1600px
+            # on the longest edge to optimize processing speed without adding borders.
+            max_dimension = 1600
+            if max(img.size) > max_dimension:
+                img.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
 
             # Apply CLAHE on L-channel to balance harsh directional shadows/highlights
             if cv2 is not None:
@@ -95,7 +97,7 @@ def _preprocess_and_save_temp(image_field):
 
 
 def _get_image_focal_length(image_path):
-    """Extract 35mm equivalent focal length from image EXIF if available."""
+    """Extract 35mm equivalent focal length from image EXIF if available; otherwise return None."""
     try:
         with Image.open(image_path) as img:
             exif = img.getexif()
@@ -112,7 +114,7 @@ def _get_image_focal_length(image_path):
                         return val
     except Exception:
         pass
-    return 35.0  # Standard human portrait focal length baseline
+    return None  # Let KeenTools estimate focal length automatically if EXIF is absent
 
 def _upload_photo(image_path, upload_url):
     logger.info(f"--- Step 2: Uploading {os.path.basename(image_path)} ---")
