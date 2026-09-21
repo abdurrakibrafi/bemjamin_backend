@@ -92,17 +92,18 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
     nose_y = vertices[landmarks['nose_tip_idx'], 1]
     upper_head_h = top_y - nose_y
 
-    # 2. Chin (Menton / Gnathion): Lowest and forward-most point on mandible
-    chin_y_min = nose_y - 1.5 * upper_head_h
-    chin_y_max = nose_y - 0.5 * upper_head_h
+    # 2. Chin (Pogonion / Menton): Most anterior prominence on lower mandible
+    chin_y_min = nose_y - 1.25 * upper_head_h
+    chin_y_max = nose_y - 0.65 * upper_head_h
     chin_mask = (
         (vertices[:, 1] > chin_y_min) &
         (vertices[:, 1] < chin_y_max) &
-        (np.abs(vertices[:, 0]) < extents[0] * 0.22)
+        (np.abs(vertices[:, 0]) < extents[0] * 0.18)
     )
     chin_candidates = np.where(chin_mask)[0]
     if len(chin_candidates) > 0:
-        chin_local = np.argmax(vertices[chin_candidates, 2] - 1.2 * vertices[chin_candidates, 1])
+        # Pogonion is the anterior-most protrusion of the chin
+        chin_local = np.argmax(vertices[chin_candidates, 2])
         landmarks['chin_idx'] = int(chin_candidates[chin_local])
 
     chin_y = vertices[landmarks['chin_idx'], 1]
@@ -118,10 +119,15 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
     nasion_idx = int(np.argmin(np.linalg.norm(vertices - nasion_est, axis=1)))
     landmarks['nasion_idx'] = nasion_idx
 
-    # 4. Inion / Opisthocranion (Back of Head): Posterior cranial prominence above neck
-    head_indices = np.where(vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.25))[0]
-    if len(head_indices) > 0:
-        landmarks['back_of_head_idx'] = int(head_indices[np.argmin(vertices[head_indices, 2])])
+    # 4. Inion / Opisthocranion (Back of Head): Posterior cranial prominence
+    # Level with eyebrows/eyes to mid-head (excludes neck/spine)
+    post_mask = (vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.50)) & (vertices[:, 1] < (chin_y + (top_y - chin_y) * 0.85))
+    post_indices = np.where(post_mask)[0]
+    if len(post_indices) > 0:
+        landmarks['back_of_head_idx'] = int(post_indices[np.argmin(vertices[post_indices, 2])])
+    else:
+        head_indices = np.where(vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.45))[0]
+        landmarks['back_of_head_idx'] = int(head_indices[np.argmin(vertices[head_indices, 2])]) if len(head_indices) > 0 else 0
 
     # 5. Outer Canthi (Left & Right Eye outer corners)
     nasion_pt = vertices[landmarks['nasion_idx']]
@@ -226,10 +232,14 @@ def _find_ear_landmarks(mesh, landmarks, side='right'):
     ear_root_idx = int(candidate_idx[np.argmax(candidates[:, 2])])
     ear_posterior_idx = int(candidate_idx[np.argmin(candidates[:, 2])])
 
+    # Root where upper ear attaches to skull (Otobasion superius)
+    ear_root_top_idx = int(candidate_idx[np.argmin(np.abs(candidates[:, 0]))])
+
     ear_depth_raw = float(abs(vertices[ear_root_idx, 2] - vertices[ear_posterior_idx, 2]))
 
     return {
         'ear_top_idx': ear_top_idx,
+        'ear_root_top_idx': ear_root_top_idx,
         'earlobe_bottom_idx': earlobe_bottom_idx,
         'ear_outer_idx': ear_outer_idx,
         'ear_root_idx': ear_root_idx,
@@ -539,10 +549,10 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         ear_right = _find_ear_landmarks(mesh, landmarks, side='right')
         ear_left  = _find_ear_landmarks(mesh, landmarks, side='left')
 
-        l_ear_ref = ear_left['ear_top_idx']  if ear_left  else landmarks.get('left_ear_level_idx',  landmarks['left_side_idx'])
-        r_ear_ref = ear_right['ear_top_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
+        l_ear_ref = ear_left.get('ear_root_top_idx', ear_left['ear_top_idx'])  if ear_left  else landmarks.get('left_ear_level_idx',  landmarks['left_side_idx'])
+        r_ear_ref = ear_right.get('ear_root_top_idx', ear_right['ear_top_idx']) if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
 
-        # ── Measurement C: Coronal Arc (L ear top → Vertex → R ear top) ─
+        # ── Measurement C: Coronal Arc (L ear root → Vertex → R ear root) ─
         raw_C_L = _calculate_surface_distance(mesh, l_ear_ref,                    landmarks['top_of_head_idx'])
         raw_C_R = _calculate_surface_distance(mesh, landmarks['top_of_head_idx'], r_ear_ref)
         cross_measurement_C = raw_C_L + raw_C_R
@@ -558,58 +568,41 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         ear = ear_right if ear_right is not None else ear_left
         ears_both = [e for e in (ear_right, ear_left) if e is not None]
 
-        # ── Measurement E: Nasion → Earlobe (surface arc along face/ear) ──
-        # Must follow the head surface, NOT a straight vertical gap.
-        eyebrow_to_earlobe_E = _calculate_surface_distance(
-            mesh, landmarks['nasion_idx'], ear['earlobe_bottom_idx']
-        )
-        if eyebrow_to_earlobe_E <= 0:
-            eyebrow_to_earlobe_E = float(np.linalg.norm(
-                vertices[landmarks['nasion_idx']] - vertices[ear['earlobe_bottom_idx']]
-            ))
+        # ── Measurement E: Nasion → Earlobe (straight-line anatomical distance) ──
+        eyebrow_to_earlobe_E = float(np.linalg.norm(
+            vertices[landmarks['nasion_idx']] - vertices[ear['earlobe_bottom_idx']]
+        ))
 
-        # ── Measurement G: Ear Height (surface arc, top → lobe) ──────────
-        # Must follow the ear surface, NOT just the vertical Y-axis gap.
+        # ── Measurement G: Ear Height (straight caliper physical height) ──────────
+        # Straight Euclidean distance between superior apex of helix and inferior lobule tip.
         if ears_both:
             g_vals = [
-                _calculate_surface_distance(mesh, e['ear_top_idx'], e['earlobe_bottom_idx'])
+                float(np.linalg.norm(vertices[e['ear_top_idx']] - vertices[e['earlobe_bottom_idx']]))
                 for e in ears_both
             ]
-            g_vals = [v for v in g_vals if v > 0]
-            ear_height_G = float(np.mean(g_vals)) if g_vals else head_height * 0.15
+            ear_height_G = float(np.mean(g_vals)) if g_vals else 7.0
         else:
-            ear_height_G = head_height * 0.15
+            ear_height_G = 7.0
 
-        # ── Measurement H: Ear Depth (surface arc, tragion → posterior rim) ─
-        # Must follow the ear surface from front root to back of ear.
-        h_vals = [
-            _calculate_surface_distance(mesh, e['ear_root_idx'], e['ear_posterior_idx'])
-            for e in ears_both
-        ]
-        h_vals = [v for v in h_vals if v > 0]
-        if h_vals:
-            ear_width_H = float(np.mean(h_vals))
-        else:
-            # Euclidean fallback if geodesic fails
-            fallback_H = [
-                float(np.linalg.norm(
-                    vertices[e['ear_root_idx']] - vertices[e['ear_posterior_idx']]
-                ))
+        # ── Measurement H: Ear Width (straight caliper physical depth) ───────────
+        # Straight distance between anterior tragus and outermost posterior helix rim.
+        if ears_both:
+            h_vals = [
+                float(np.linalg.norm(vertices[e['ear_root_idx']] - vertices[e['ear_posterior_idx']]))
                 for e in ears_both
             ]
-            ear_width_H = float(np.mean(fallback_H)) if fallback_H else head_height * 0.12
-        if ear_width_H <= 0:
-            ear_width_H = head_height * 0.12
+            ear_width_H = float(np.mean(h_vals)) if h_vals else 4.5
+        else:
+            ear_width_H = 4.5
 
-        # ── Measurement F: Eye Corner → Ear Root (surface arc) ──────────
-        # Must follow the head surface from outer eye corner to ear tragion.
+        # ── Measurement F: Eye Corner → Ear (surface arc to posterior ear) ────────
+        # Follows side of face to posterior border of the ear (Tragion to exocanthion arc).
         eye_side = 'right' if ear_right is not None else 'left'
         eye_idx  = landmarks.get(f'eye_outer_corner_{eye_side}_idx', landmarks['nasion_idx'])
-        ear_root_idx = ear['ear_root_idx']
-        eye_corner_to_ear_F = _calculate_surface_distance(mesh, eye_idx, ear_root_idx)
+        ear_post_idx = ear['ear_posterior_idx']
+        eye_corner_to_ear_F = _calculate_surface_distance(mesh, eye_idx, ear_post_idx)
         if eye_corner_to_ear_F <= 0:
-            # Euclidean fallback if geodesic path cannot be computed
-            eye_corner_to_ear_F = float(np.linalg.norm(vertices[eye_idx] - vertices[ear_root_idx]))
+            eye_corner_to_ear_F = float(np.linalg.norm(vertices[eye_idx] - vertices[ear_post_idx]))
 
         # ── Eye-to-Eye (biocular width) ──────────────────────────────────
         eye_to_eye = float(np.linalg.norm(
