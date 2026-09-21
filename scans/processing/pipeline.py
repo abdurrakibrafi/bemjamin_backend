@@ -136,30 +136,17 @@ def _start_reconstruction(api_key, avatar_id, image_paths):
     headers = _get_api_headers(api_key)
     headers['Content-Type'] = 'application/json'
     
-    # Extract focal lengths from original image EXIF if available; otherwise use auto estimation
-    focal_values = [_get_image_focal_length(p) for p in image_paths]
-    has_valid_exif_focals = (
-        len(focal_values) > 0
-        and all(f is not None and f > 15 for f in focal_values)
-    )
-    
-    if has_valid_exif_focals:
-        payload = {
-            "focal_length_type": {
-                "focal_length_type": "manual",
-                "focal_length_values": focal_values
-            },
-            "expressions_enabled": False
-        }
-    else:
-        payload = {
-            "focal_length_type": {
-                "focal_length_type": "auto"
-            },
-            "expressions_enabled": False
-        }
+    # KeenTools Cloud API standard: estimate_common solves a single consistent
+    # focal length across all multi-angle smartphone photos, avoiding camera solve
+    # errors and texture projection ghosting (e.g. eye/nose double impressions on cheeks).
+    payload = {
+        "focal_length_type": {
+            "focal_length_type": "estimate_common"
+        },
+        "expressions_enabled": False
+    }
 
-    logger.info(f"--- Step 3: Start Reconstruction (focal_valid={has_valid_exif_focals}, payload: {payload}) ---")
+    logger.info(f"--- Step 3: Start Reconstruction (payload: {payload}) ---")
     response = requests.post(url, headers=headers, json=payload, timeout=30)
     
     if response.status_code not in [200, 202]: 
