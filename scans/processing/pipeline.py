@@ -5,15 +5,6 @@ import tempfile
 import trimesh
 import traceback
 import logging
-try:
-    import cv2
-except ImportError:
-    cv2 = None
-try:
-    import mediapipe as mp
-except ImportError:
-    mp = None
-import numpy as np
 from PIL import Image, ImageOps
 from django.conf import settings
 from django.core.files import File
@@ -58,128 +49,34 @@ def _init_avatar(api_key, img_count):
     return data.get("avatar_id"), data.get("img_urls")
 
 
-def _detect_blur_score(img_pil):
+def _get_raw_image_path(image_field):
     """
-    Measure image sharpness using Laplacian variance.
-    Returns a float score — lower means blurrier.
-    Score < 60 is considered too blurry for reliable 3D reconstruction.
-    Returns None if cv2 is unavailable.
+    Returns (file_path, is_temp):
+    Uses the real, original uploaded image directly without any modification,
+    cropping, background removal, or color alteration.
+    If the file exists locally on disk, returns its path directly.
+    Otherwise (e.g. S3), writes the exact raw bytes to a temp file.
     """
-    if cv2 is None:
-        return None
     try:
-        gray = np.array(img_pil.convert('L'))
-        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        if hasattr(image_field, 'path') and os.path.exists(image_field.path):
+            return image_field.path, False
     except Exception:
-        return None
+        pass
 
-
-def _crop_head_with_padding(img_pil):
-    """
-    Detect face bounding box and crop the image so the full head
-    (including top of hair) is always visible with generous padding:
-      - 55% of face height added ABOVE (for hair/head top)
-      - 25% of face width added on each SIDE
-      - 20% of face height added BELOW (for chin/neck)
-
-    Uses MediaPipe FaceDetection (accurate) then falls back to
-    OpenCV Haar Cascade. Returns the original image if no face found.
-    """
-    if cv2 is None:
-        return img_pil
-    try:
-        img_np = np.array(img_pil)
-        h_img, w_img = img_np.shape[:2]
-
-        # --- MediaPipe FaceDetection (preferred) ---
-        if mp is not None:
-            try:
-                mp_fd = mp.solutions.face_detection
-                with mp_fd.FaceDetection(model_selection=1, min_detection_confidence=0.5) as detector:
-                    results = detector.process(img_np)
-                    if results.detections:
-                        bbox = results.detections[0].location_data.relative_bounding_box
-                        x1 = int(bbox.xmin * w_img)
-                        y1 = int(bbox.ymin * h_img)
-                        bw = int(bbox.width  * w_img)
-                        bh = int(bbox.height * h_img)
-
-                        pad_top    = int(bh * 0.55)
-                        pad_side   = int(bw * 0.25)
-                        pad_bottom = int(bh * 0.20)
-
-                        x1c = max(0, x1 - pad_side)
-                        y1c = max(0, y1 - pad_top)
-                        x2c = min(w_img, x1 + bw + pad_side)
-                        y2c = min(h_img, y1 + bh + pad_bottom)
-
-                        if (x2c - x1c) > 50 and (y2c - y1c) > 50:
-                            return Image.fromarray(img_np[y1c:y2c, x1c:x2c])
-            except Exception as e:
-                logger.debug(f"MediaPipe face crop failed: {e}")
-
-        # --- Haar Cascade fallback ---
-        face_xml = os.path.join(os.path.dirname(os.path.abspath(__file__)), "haarcascade_frontalface_default.xml")
-        if os.path.exists(face_xml):
-            gray_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-            fc = cv2.CascadeClassifier(face_xml)
-            faces = fc.detectMultiScale(gray_cv, 1.1, 5, minSize=(80, 80))
-            if len(faces) > 0:
-                (x, y, fw, fh) = max(faces, key=lambda f: f[2] * f[3])
-
-                pad_top    = int(fh * 0.55)
-                pad_side   = int(fw * 0.25)
-                pad_bottom = int(fh * 0.20)
-
-                x1c = max(0, x - pad_side)
-                y1c = max(0, y - pad_top)
-                x2c = min(w_img, x + fw + pad_side)
-                y2c = min(h_img, y + fh + pad_bottom)
-
-                if (x2c - x1c) > 50 and (y2c - y1c) > 50:
-                    return Image.fromarray(img_np[y1c:y2c, x1c:x2c])
-    except Exception as e:
-        logger.debug(f"Head crop fallback: {e}")
-
-    return img_pil  # original unchanged
-
-
-def _neutralize_background(img_pil):
-    """
-    Use MediaPipe Selfie Segmentation to replace background with neutral
-    mid-gray (128, 128, 128), helping KeenTools focus on head geometry
-    without distracting background textures or colors.
-    Falls back gracefully to original image if MediaPipe is unavailable.
-    """
-    if mp is None or cv2 is None:
-        return img_pil
-    try:
-        mp_seg = mp.solutions.selfie_segmentation
-        with mp_seg.SelfieSegmentation(model_selection=1) as segmenter:
-            img_np = np.array(img_pil)  # already RGB
-            results = segmenter.process(img_np)
-            if results.segmentation_mask is not None:
-                mask = results.segmentation_mask          # float32, 0.0-1.0
-                mask_3ch = np.stack([mask] * 3, axis=-1) # H x W x 3
-                # Neutral gray background avoids white-glare artifacts
-                background = np.full_like(img_np, 128, dtype=np.uint8)
-                blended = (img_np * mask_3ch + background * (1.0 - mask_3ch)).astype(np.uint8)
-                return Image.fromarray(blended)
-    except Exception as e:
-        logger.debug(f"Background neutralization failed: {e}")
-    return img_pil
+    ext = os.path.splitext(image_field.name)[1] if image_field.name else ".jpg"
+    if not ext:
+        ext = ".jpg"
+    temp_f = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+    image_field.seek(0)
+    temp_f.write(image_field.read())
+    temp_f.close()
+    return temp_f.name, True
 
 
 def _preprocess_and_save_temp(image_field):
     """
-    Full preprocessing pipeline for reliable 3D reconstruction:
-    1.  EXIF-correct orientation.
-    2.  Convert to RGB.
-    3.  Face-aware head crop with generous padding (top of head never cut off).
-    4.  Background neutralization via MediaPipe Selfie Segmentation.
-    5.  CLAHE lighting normalization (L*a*b* channel) to fix uneven shadows.
-    6.  Downscale to max 1600 px on longest edge for upload speed.
-    7.  Save as high-quality JPEG.
+    Helper that preserves aspect ratio and downscales only if > 1600px.
+    Kept for test suite compatibility. Does not crop, mask background, or apply CLAHE.
     """
     temp_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
     try:
@@ -187,38 +84,12 @@ def _preprocess_and_save_temp(image_field):
             img = ImageOps.exif_transpose(img)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-
-            # Step 1: Blur check — warn but do NOT reject (let KeenTools decide)
-            blur_score = _detect_blur_score(img)
-            if blur_score is not None and blur_score < 60:
-                logger.warning(f"Image appears blurry (Laplacian score={blur_score:.1f} < 60). "
-                               f"3D quality may be reduced.")
-
-            # Step 2: Crop to head with padding so top of head is included
-            img = _crop_head_with_padding(img)
-
-            # Step 3: Replace background with neutral gray
-            img = _neutralize_background(img)
-
-            # Step 4: CLAHE on L-channel to fix harsh shadows / uneven lighting
-            if cv2 is not None:
-                img_np = np.array(img)
-                lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
-                l, a, b = cv2.split(lab)
-                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                cl = clahe.apply(l)
-                enhanced_np = cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2RGB)
-                img = Image.fromarray(enhanced_np)
-            else:
-                img = ImageOps.autocontrast(img)
-
-            # Step 5: Downscale if too large
-            if max(img.size) > 1600:
-                img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
-
+            max_dimension = 1600
+            if max(img.size) > max_dimension:
+                img.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
             img.save(temp_f.name, format="JPEG", quality=95)
     except Exception as e:
-        logger.warning(f"Preprocessing fallback to raw upload: {e}")
+        logger.warning(f"Fallback to raw read: {e}")
         image_field.seek(0)
         temp_f.write(image_field.read())
     temp_f.close()
@@ -260,28 +131,23 @@ def _upload_photo(image_path, upload_url):
     except Exception as e:
         raise PipelineError(f"Upload failed: {e}")
 
-def _start_reconstruction(api_key, avatar_id, focal_lengths=None):
-    """
-    Start KeenTools 3D reconstruction.
-    focal_lengths: pre-extracted list of float|None values from ORIGINAL images
-                   (must be extracted before preprocessing strips EXIF data).
-    """
+def _start_reconstruction(api_key, avatar_id, image_paths):
     url = _make_url(f"{avatar_id}/process")
     headers = _get_api_headers(api_key)
     headers['Content-Type'] = 'application/json'
-
-    # Use pre-extracted focal lengths (from original files, before EXIF is lost)
-    has_valid_focals = (
-        focal_lengths is not None
-        and len(focal_lengths) > 0
-        and all(f is not None and f > 15 for f in focal_lengths)
+    
+    # Extract focal lengths from original image EXIF if available; otherwise use auto estimation
+    focal_values = [_get_image_focal_length(p) for p in image_paths]
+    has_valid_exif_focals = (
+        len(focal_values) > 0
+        and all(f is not None and f > 15 for f in focal_values)
     )
-
-    if has_valid_focals:
+    
+    if has_valid_exif_focals:
         payload = {
             "focal_length_type": {
                 "focal_length_type": "manual",
-                "focal_length_values": focal_lengths
+                "focal_length_values": focal_values
             },
             "expressions_enabled": False
         }
@@ -293,10 +159,10 @@ def _start_reconstruction(api_key, avatar_id, focal_lengths=None):
             "expressions_enabled": False
         }
 
-    logger.info(f"--- Step 3: Start Reconstruction (focal_valid={has_valid_focals}, payload={payload}) ---")
+    logger.info(f"--- Step 3: Start Reconstruction (focal_valid={has_valid_exif_focals}, payload: {payload}) ---")
     response = requests.post(url, headers=headers, json=payload, timeout=30)
-
-    if response.status_code not in [200, 202]:
+    
+    if response.status_code not in [200, 202]: 
         raise PipelineError(f"Start failed: {response.status_code} - {response.text}")
 
 def _poll_for_completion(api_key, avatar_id, timeout=600):
@@ -411,51 +277,31 @@ def run_full_scan_pipeline(scan_id):
     from scans.models import Scan
     scan = Scan.objects.get(id=scan_id)
     api_key = getattr(settings, 'KEENTOOLS_SECRET_KEY', None)
-    if not api_key: raise PipelineError("Key missing")
+    if not api_key:
+        raise PipelineError("Key missing")
 
     image_paths = []
     temp_files = []
     obj_temp_path = None 
 
     try:
-        # ── STEP A: Extract EXIF focal lengths from ORIGINAL files BEFORE
-        #            preprocessing strips EXIF data. This fixes the bug where
-        #            PIL re-saving loses EXIF and KeenTools always falls back
-        #            to auto focal length estimation.
-        original_focal_lengths = []
-
+        # Step A: Collect the REAL, original uploaded images directly
         if scan.image_front:
-            scan.image_front.open()   # ensure file pointer is at start
-            fl = _get_image_focal_length(scan.image_front)
-            original_focal_lengths.append(fl)
-            scan.image_front.seek(0)
+            path, is_temp = _get_raw_image_path(scan.image_front)
+            image_paths.append(path)
+            if is_temp:
+                temp_files.append(path)
 
         for img in scan.extra_images.order_by('order').all():
-            img.image.open()
-            fl = _get_image_focal_length(img.image)
-            original_focal_lengths.append(fl)
-            img.image.seek(0)
-
-        logger.info(f"Pre-extracted focal lengths: {original_focal_lengths}")
-
-        # ── STEP B: Preprocess and save temp files (EXIF may be lost here)
-        if scan.image_front:
-            scan.image_front.seek(0)
-            temp_path = _preprocess_and_save_temp(scan.image_front)
-            image_paths.append(temp_path)
-            temp_files.append(temp_path)
-
-        for img in scan.extra_images.order_by('order').all():
-            img.image.seek(0)
-            temp_path = _preprocess_and_save_temp(img.image)
-            image_paths.append(temp_path)
-            temp_files.append(temp_path)
+            path, is_temp = _get_raw_image_path(img.image)
+            image_paths.append(path)
+            if is_temp:
+                temp_files.append(path)
 
         if len(image_paths) < 1:
             raise PipelineError("No images to process")
 
         count = len(image_paths)
-
 
         avatar_id, urls = _init_avatar(api_key, count)
 
@@ -465,7 +311,7 @@ def run_full_scan_pipeline(scan_id):
         for path, url in zip(image_paths, urls):
             _upload_photo(path, url)
 
-        _start_reconstruction(api_key, avatar_id, focal_lengths=original_focal_lengths)
+        _start_reconstruction(api_key, avatar_id, image_paths)
         
         _poll_for_completion(api_key, avatar_id)
         
