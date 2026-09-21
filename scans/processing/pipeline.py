@@ -136,17 +136,30 @@ def _start_reconstruction(api_key, avatar_id, image_paths):
     headers = _get_api_headers(api_key)
     headers['Content-Type'] = 'application/json'
     
-    # KeenTools Cloud API standard: estimate_common solves a single consistent
-    # focal length across all multi-angle smartphone photos, avoiding camera solve
-    # errors and texture projection ghosting (e.g. eye/nose double impressions on cheeks).
+    # Check if all images have identical dimensions (width x height)
+    shapes = []
+    for p in image_paths:
+        try:
+            with Image.open(p) as im:
+                shapes.append(im.size)
+        except Exception:
+            pass
+
+    all_same_shape = len(shapes) > 0 and len(set(shapes)) == 1
+
+    # KeenTools Cloud API requirement:
+    # - estimate_common requires identical width x height for all images.
+    # - estimate_per_image handles varying image aspect ratios and shapes.
+    focal_type = "estimate_common" if all_same_shape else "estimate_per_image"
+
     payload = {
         "focal_length_type": {
-            "focal_length_type": "estimate_common"
+            "focal_length_type": focal_type
         },
         "expressions_enabled": False
     }
 
-    logger.info(f"--- Step 3: Start Reconstruction (payload: {payload}) ---")
+    logger.info(f"--- Step 3: Start Reconstruction (focal_type={focal_type}, shapes={shapes}) ---")
     response = requests.post(url, headers=headers, json=payload, timeout=30)
     
     if response.status_code not in [200, 202]: 
