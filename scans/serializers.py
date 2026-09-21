@@ -74,7 +74,12 @@ class ScanCreateSerializer(serializers.ModelSerializer):
         
         scan = Scan.objects.create(**validated_data)
         
-        scan_images = [ScanImage(scan=scan, image=img) for img in extra_images_data]
+        # Preserve the frontend submission order so the pipeline sends images
+        # to KeenTools in the correct angular sequence (right → back → left etc.)
+        scan_images = [
+            ScanImage(scan=scan, image=img, order=idx)
+            for idx, img in enumerate(extra_images_data)
+        ]
         ScanImage.objects.bulk_create(scan_images)
         
         return scan

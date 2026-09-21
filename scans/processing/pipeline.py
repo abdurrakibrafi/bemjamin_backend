@@ -286,7 +286,7 @@ def run_full_scan_pipeline(scan_id):
             image_paths.append(temp_path)
             temp_files.append(temp_path)
 
-        for img in scan.extra_images.all():
+        for img in scan.extra_images.order_by('order').all():
             temp_path = _preprocess_and_save_temp(img.image)
             image_paths.append(temp_path)
             temp_files.append(temp_path)

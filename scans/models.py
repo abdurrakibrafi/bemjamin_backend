@@ -57,4 +57,8 @@ class Scan(models.Model):
 class ScanImage(models.Model):
     scan = models.ForeignKey(Scan, related_name='extra_images', on_delete=models.CASCADE)
     image = models.ImageField(upload_to='scans/inputs/')
+    order = models.PositiveSmallIntegerField(default=0, help_text="Capture sequence order (0=front 0°, 1-7=clockwise 360°)")
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order']
