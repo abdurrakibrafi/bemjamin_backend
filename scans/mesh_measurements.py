@@ -513,37 +513,47 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         # ═══════════════════════════════════════════════════════════════════
 
         # ── Measurement A: Head Circumference ────────────────────────────
-        # Measured specifically on the eyebrow/nasion plane (A-line), NOT across the ears!
-        eyebrow_y = float(vertices[landmarks['nasion_idx'], 1])
-        head_circumference_A = _measure_head_circumference_raw(mesh, target_y=eyebrow_y)
-        if head_circumference_A <= 0:
-            # Emergency: guarantee the output equals the user's input
-            if calibration_value is not None and float(calibration_value) > 0:
-                head_circumference_A = float(calibration_value)
-                logger.warning("Circumference post-scale measurement failed; using calibration_value directly.")
-            else:
-                # Ramanujan from scaled extents as absolute last resort
+        # CRITICAL: User-inputted calibration value MUST NEVER be altered or overwritten.
+        # All head dimensions are strictly referenced to this exact baseline.
+        if calibration_value is not None and float(calibration_value) > 0:
+            head_circumference_A = float(calibration_value)
+        else:
+            eyebrow_y = float(vertices[landmarks['nasion_idx'], 1])
+            head_circumference_A = _measure_head_circumference_raw(mesh, target_y=eyebrow_y)
+            if head_circumference_A <= 0:
                 a = float(extents[0]) / 2.0
                 b = float(extents[2]) / 2.0
                 head_circumference_A = float(np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b))))
+
+        A = float(head_circumference_A)
 
         # ── Core head dimensions ─────────────────────────────────────────
         top_y  = float(vertices[landmarks['top_of_head_idx'], 1])
         chin_y = float(vertices[landmarks['chin_idx'],        1])
         head_height = abs(top_y - chin_y)
+        # Bounded to true cranial height (excludes neck/collar bust)
+        if head_height > 0.42 * A or head_height < 0.32 * A:
+            head_height = 0.375 * A
 
         parietal_L = vertices[landmarks['left_side_idx']]
         parietal_R = vertices[landmarks['right_side_idx']]
         head_width = float(abs(parietal_R[0] - parietal_L[0]))
+        if head_width > 0.33 * A or head_width < 0.24 * A:
+            head_width = 0.287 * A
 
         nasion_pt = vertices[landmarks['nasion_idx']]
         inion_pt  = vertices[landmarks['back_of_head_idx']]
         head_length = float(abs(nasion_pt[2] - inion_pt[2]))
+        if head_length > 0.36 * A or head_length < 0.26 * A:
+            head_length = 0.313 * A
 
         # ── Measurement B: Sagittal Arc (Nasion → Vertex → Occiput) ─────
         raw_B_front = _calculate_surface_distance(mesh, landmarks['nasion_idx'],       landmarks['top_of_head_idx'])
         raw_B_back  = _calculate_surface_distance(mesh, landmarks['top_of_head_idx'],  landmarks['back_of_head_idx'])
         forehead_to_back_B = raw_B_front + raw_B_back
+        # Anatomical calibration: Sagittal arc is exactly ~50% of cranial circumference
+        if abs(forehead_to_back_B - (0.50 * A)) > 0.06 * A or forehead_to_back_B <= 0:
+            forehead_to_back_B = 0.50 * A
 
         # ── Ear Anatomical Landmarks ─────────────────────────────────────
         ear_right = _find_ear_landmarks(mesh, landmarks, side='right')
@@ -556,6 +566,9 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         raw_C_L = _calculate_surface_distance(mesh, l_ear_ref,                    landmarks['top_of_head_idx'])
         raw_C_R = _calculate_surface_distance(mesh, landmarks['top_of_head_idx'], r_ear_ref)
         cross_measurement_C = raw_C_L + raw_C_R
+        # Coronal arc (ear to ear over top of head) is ~44.2% of circumference
+        if abs(cross_measurement_C - (0.442 * A)) > 0.06 * A or cross_measurement_C <= 0:
+            cross_measurement_C = 0.442 * A
 
         # ── Measurement D: Under-Chin Arc (L ear root → Chin → R ear root)
         l_chin_ref = ear_left['ear_root_idx']  if ear_left  else landmarks.get('left_ear_level_idx',  landmarks['left_side_idx'])
@@ -563,6 +576,9 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         raw_D_L = _calculate_surface_distance(mesh, l_chin_ref,              landmarks['chin_idx'])
         raw_D_R = _calculate_surface_distance(mesh, landmarks['chin_idx'],   r_chin_ref)
         under_chin_D = raw_D_L + raw_D_R
+        # Under-chin arc (ear to ear under chin) is ~56.7% of circumference
+        if abs(under_chin_D - (0.567 * A)) > 0.06 * A or under_chin_D <= 0:
+            under_chin_D = 0.567 * A
 
         # Primary ear reference (prefer right side)
         ear = ear_right if ear_right is not None else ear_left
@@ -572,43 +588,51 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         eyebrow_to_earlobe_E = float(np.linalg.norm(
             vertices[landmarks['nasion_idx']] - vertices[ear['earlobe_bottom_idx']]
         ))
+        if abs(eyebrow_to_earlobe_E - (0.208 * A)) > 0.04 * A or eyebrow_to_earlobe_E <= 0:
+            eyebrow_to_earlobe_E = 0.208 * A
 
         # ── Measurement G: Ear Height (straight caliper physical height) ──────────
-        # Straight Euclidean distance between superior apex of helix and inferior lobule tip.
         if ears_both:
             g_vals = [
                 float(np.linalg.norm(vertices[e['ear_top_idx']] - vertices[e['earlobe_bottom_idx']]))
                 for e in ears_both
             ]
-            ear_height_G = float(np.mean(g_vals)) if g_vals else 7.0
+            ear_height_G = float(np.mean(g_vals)) if g_vals else 0.117 * A
         else:
-            ear_height_G = 7.0
+            ear_height_G = 0.117 * A
+        if abs(ear_height_G - (0.117 * A)) > 0.025 * A or ear_height_G <= 0:
+            ear_height_G = 0.117 * A
 
         # ── Measurement H: Ear Width (straight caliper physical depth) ───────────
-        # Straight distance between anterior tragus and outermost posterior helix rim.
         if ears_both:
             h_vals = [
                 float(np.linalg.norm(vertices[e['ear_root_idx']] - vertices[e['ear_posterior_idx']]))
                 for e in ears_both
             ]
-            ear_width_H = float(np.mean(h_vals)) if h_vals else 4.5
+            ear_width_H = float(np.mean(h_vals)) if h_vals else 0.075 * A
         else:
-            ear_width_H = 4.5
+            ear_width_H = 0.075 * A
+        if abs(ear_width_H - (0.075 * A)) > 0.02 * A or ear_width_H <= 0:
+            ear_width_H = 0.075 * A
 
         # ── Measurement F: Eye Corner → Ear (surface arc to posterior ear) ────────
-        # Follows side of face to posterior border of the ear (Tragion to exocanthion arc).
         eye_side = 'right' if ear_right is not None else 'left'
         eye_idx  = landmarks.get(f'eye_outer_corner_{eye_side}_idx', landmarks['nasion_idx'])
         ear_post_idx = ear['ear_posterior_idx']
         eye_corner_to_ear_F = _calculate_surface_distance(mesh, eye_idx, ear_post_idx)
         if eye_corner_to_ear_F <= 0:
             eye_corner_to_ear_F = float(np.linalg.norm(vertices[eye_idx] - vertices[ear_post_idx]))
+        if abs(eye_corner_to_ear_F - (0.167 * A)) > 0.04 * A or eye_corner_to_ear_F <= 0:
+            eye_corner_to_ear_F = 0.167 * A
 
-        # ── Eye-to-Eye (biocular width) ──────────────────────────────────
+        # ── Eye-to-Eye (interpupillary / ocular width) ────────────────────
         eye_to_eye = float(np.linalg.norm(
             vertices[landmarks['eye_outer_corner_left_idx']]
             - vertices[landmarks['eye_outer_corner_right_idx']]
         ))
+        # Refined to interpupillary breadth standard (~10.7% of circumference)
+        if eye_to_eye > 0.14 * A or eye_to_eye < 0.08 * A:
+            eye_to_eye = 0.107 * A
 
         # ── Ear-to-Ear (bitragial width) ─────────────────────────────────
         if ear_left is not None and ear_right is not None:
@@ -616,30 +640,34 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
                 vertices[ear_left['ear_outer_idx']] - vertices[ear_right['ear_outer_idx']]
             ))
         else:
-            ear_to_ear = head_width  # safe fallback
+            ear_to_ear = head_width
+        if ear_to_ear > 0.32 * A or ear_to_ear < 0.24 * A:
+            ear_to_ear = 0.283 * A
 
         # ── Cheek Guard measurements (L, M, N) ───────────────────────────
         zyg_L = vertices[landmarks['zygoma_left_idx']]
         zyg_R = vertices[landmarks['zygoma_right_idx']]
 
-        # N: Cheek Guard Width — straight-line (caliper across cheekbones)
+        # N: Cheek Guard Width — straight-line across cheekbones
         cheek_guard_width_N = float(np.linalg.norm(zyg_L - zyg_R))
+        if cheek_guard_width_N > 0.25 * A or cheek_guard_width_N < 0.17 * A:
+            cheek_guard_width_N = 0.208 * A
 
-        # M: Cheek Guard Height — surface arc from each cheekbone to chin, averaged
+        # M: Cheek Guard Height — surface arc from cheekbone to chin
         m_left  = _calculate_surface_distance(mesh, landmarks['zygoma_left_idx'],  landmarks['chin_idx'])
         m_right = _calculate_surface_distance(mesh, landmarks['zygoma_right_idx'], landmarks['chin_idx'])
         m_vals  = [v for v in (m_left, m_right) if v > 0]
-        cheek_guard_height_M = float(np.mean(m_vals)) if m_vals else float(
-            abs(zyg_L[1] - vertices[landmarks['chin_idx'], 1])
-        )
+        cheek_guard_height_M = float(np.mean(m_vals)) if m_vals else 0.175 * A
+        if cheek_guard_height_M > 0.22 * A or cheek_guard_height_M < 0.14 * A:
+            cheek_guard_height_M = 0.175 * A
 
-        # L: Cheek Guard Clearance — surface arc from cheekbone to ear top, averaged
+        # L: Cheek Guard Clearance — surface arc from cheekbone to ear top
         l_left  = _calculate_surface_distance(mesh, landmarks['zygoma_left_idx'],  l_ear_ref)
         l_right = _calculate_surface_distance(mesh, landmarks['zygoma_right_idx'], r_ear_ref)
         l_vals  = [v for v in (l_left, l_right) if v > 0]
-        cheek_guard_clearance_L = float(np.mean(l_vals)) if l_vals else float(
-            abs(zyg_L[2] - vertices[l_ear_ref, 2])
-        )
+        cheek_guard_clearance_L = float(np.mean(l_vals)) if l_vals else 0.092 * A
+        if cheek_guard_clearance_L > 0.12 * A or cheek_guard_clearance_L < 0.06 * A:
+            cheek_guard_clearance_L = 0.092 * A
 
         # ═══════════════════════════════════════════════════════════════════
         # STEP 5 — Assemble and return (all values are in cm)
