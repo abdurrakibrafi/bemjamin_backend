@@ -645,29 +645,41 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
             ear_to_ear = 0.283 * A
 
         # ── Cheek Guard measurements (L, M, N) ───────────────────────────
+        # Based on ATO FORM Starlight head protection dimension specifications:
+        # L: Height of free area from forehead guard to cheek protection (Freiraum Stirn- zu Wangenschutz)
+        # M: Height of the individual cheek protection pad itself (Höhe des Wangenschutzes)
+        # N: Width of the individual cheek protection pad itself (Breite des Wangenschutzes)
         zyg_L = vertices[landmarks['zygoma_left_idx']]
         zyg_R = vertices[landmarks['zygoma_right_idx']]
 
-        # N: Cheek Guard Width — straight-line across cheekbones
-        cheek_guard_width_N = float(np.linalg.norm(zyg_L - zyg_R))
-        if cheek_guard_width_N > 0.25 * A or cheek_guard_width_N < 0.17 * A:
-            cheek_guard_width_N = 0.208 * A
+        # N: Cheek Guard Width — width of an individual cheek protection pad (~5.0 - 6.0 cm)
+        # Lateral span of single cheek pad from zygoma to ear root / preauricular junction (~half bizygomatic span)
+        ear_ref_L = l_chin_ref
+        ear_ref_R = r_chin_ref
+        n_left  = float(np.linalg.norm(zyg_L - vertices[ear_ref_L]))
+        n_right = float(np.linalg.norm(zyg_R - vertices[ear_ref_R]))
+        n_vals  = [v for v in (n_left, n_right) if v > 0]
+        cheek_guard_width_N = float(np.mean(n_vals)) if n_vals else (0.5 * float(np.linalg.norm(zyg_L - zyg_R)))
+        if cheek_guard_width_N > 0.115 * A or cheek_guard_width_N < 0.075 * A:
+            cheek_guard_width_N = 0.092 * A
 
-        # M: Cheek Guard Height — surface arc from cheekbone to chin
-        m_left  = _calculate_surface_distance(mesh, landmarks['zygoma_left_idx'],  landmarks['chin_idx'])
-        m_right = _calculate_surface_distance(mesh, landmarks['zygoma_right_idx'], landmarks['chin_idx'])
+        # M: Cheek Guard Height — height of an individual cheek protection pad (~4.5 - 5.5 cm)
+        # Pad spans the zygoma/cheek prominence down to mid-cheek (~48% of the distance from cheekbone to chin)
+        m_left  = _calculate_surface_distance(mesh, landmarks['zygoma_left_idx'],  landmarks['chin_idx']) * 0.48
+        m_right = _calculate_surface_distance(mesh, landmarks['zygoma_right_idx'], landmarks['chin_idx']) * 0.48
         m_vals  = [v for v in (m_left, m_right) if v > 0]
-        cheek_guard_height_M = float(np.mean(m_vals)) if m_vals else 0.175 * A
-        if cheek_guard_height_M > 0.22 * A or cheek_guard_height_M < 0.14 * A:
-            cheek_guard_height_M = 0.175 * A
+        cheek_guard_height_M = float(np.mean(m_vals)) if m_vals else 0.083 * A
+        if cheek_guard_height_M > 0.11 * A or cheek_guard_height_M < 0.065 * A:
+            cheek_guard_height_M = 0.083 * A
 
-        # L: Cheek Guard Clearance — surface arc from cheekbone to ear top
-        l_left  = _calculate_surface_distance(mesh, landmarks['zygoma_left_idx'],  l_ear_ref)
-        l_right = _calculate_surface_distance(mesh, landmarks['zygoma_right_idx'], r_ear_ref)
+        # L: Cheek Guard Clearance — vertical free space from forehead guard to cheek protection pad (~4.5 - 5.2 cm)
+        # Vertical clearance window from eyebrow/forehead reference plane (nasion level) down to top edge of cheek guard (zygoma)
+        l_left  = float(abs(vertices[landmarks['nasion_idx'], 1] - zyg_L[1]))
+        l_right = float(abs(vertices[landmarks['nasion_idx'], 1] - zyg_R[1]))
         l_vals  = [v for v in (l_left, l_right) if v > 0]
-        cheek_guard_clearance_L = float(np.mean(l_vals)) if l_vals else 0.092 * A
-        if cheek_guard_clearance_L > 0.12 * A or cheek_guard_clearance_L < 0.06 * A:
-            cheek_guard_clearance_L = 0.092 * A
+        cheek_guard_clearance_L = float(np.mean(l_vals)) if l_vals else 0.082 * A
+        if cheek_guard_clearance_L > 0.11 * A or cheek_guard_clearance_L < 0.06 * A:
+            cheek_guard_clearance_L = 0.082 * A
 
         # ═══════════════════════════════════════════════════════════════════
         # STEP 5 — Assemble and return (all values are in cm)

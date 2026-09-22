@@ -52,7 +52,7 @@ When calibrating on a physical head of circumference $A = 60.0\text{ cm}$, the p
 * **Ear Height (G)**: $\approx 7.0\text{ cm}$
 * **Ear Width (H)**: $\approx 4.5\text{ cm}$
 * **Eyebrow to Earlobe (E)**: $\approx 12.0 - 13.0\text{ cm}$
-* **Cheek Guard Height (M)**: $\approx 10.0 - 11.0\text{ cm}$
-* **Cheek Guard Clearance (L)**: $\approx 5.0 - 6.0\text{ cm}$
-* **Cheek Guard Width (N)**: $\approx 12.0 - 13.5\text{ cm}$
+* **Cheek Guard Height (M)**: $\approx 4.5 - 5.5\text{ cm}$ (ATO FORM Starlight: Vertical height of an individual cheek protection pad)
+* **Cheek Guard Clearance (L)**: $\approx 4.5 - 5.2\text{ cm}$ (ATO FORM Starlight: Height of free area from forehead guard to cheek protection pad)
+* **Cheek Guard Width (N)**: $\approx 5.0 - 6.0\text{ cm}$ (ATO FORM Starlight: Width of an individual cheek protection pad)
 * **Head Height (Vertex to Chin)**: $\approx 22.0 - 23.5\text{ cm}$ (excluding neck)
