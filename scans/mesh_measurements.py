@@ -230,6 +230,21 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
         landmarks['left_ear_level_idx'] = landmarks['left_side_idx']
         landmarks['right_ear_level_idx'] = landmarks['right_side_idx']
 
+    # 9. Mandibular Angles (Gonion - Left & Right): Corner / angle of the lower jaw
+    for side, sign, pool in (('right', 1, right_indices), ('left', -1, left_indices)):
+        try:
+            gonion_est = np.array([
+                sign * extents[0] * 0.28,
+                chin_y + (top_y - chin_y) * 0.12,
+                vertices[landmarks['nasion_idx'], 2] - extents[2] * 0.28
+            ])
+            if len(pool) > 0:
+                landmarks[f'gonion_{side}_idx'] = int(pool[np.argmin(np.linalg.norm(vertices[pool] - gonion_est, axis=1))])
+            else:
+                landmarks[f'gonion_{side}_idx'] = int(np.argmin(np.linalg.norm(vertices - gonion_est, axis=1)))
+        except Exception:
+            landmarks[f'gonion_{side}_idx'] = landmarks['chin_idx']
+
     return landmarks
 
 
@@ -638,13 +653,18 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         if cross_measurement_C <= 0:
             cross_measurement_C = (32.0 / 58.0) * A
 
-        # ── Measurement D: Under-Chin Arc (L ear root → Chin → R ear root) ─
-        # Helmet chin strap attaches at the anterior ear root / tragion level and passes around the chin
+        # ── Measurement D: Under-Chin Arc (L ear root → L gonion → Chin → R gonion → R ear root) ─
+        # Helmet chin strap attaches at the ear root, travels along the jawline/gonion, and wraps under the chin
         l_chin_ref = ear_left['ear_root_idx'] if ear_left else landmarks.get('left_ear_level_idx', landmarks['left_side_idx'])
         r_chin_ref = ear_right['ear_root_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
-        raw_D_L = _calculate_surface_distance(mesh, l_chin_ref,              landmarks['chin_idx'])
-        raw_D_R = _calculate_surface_distance(mesh, landmarks['chin_idx'],   r_chin_ref)
-        under_chin_D = raw_D_L + raw_D_R
+        gonion_L = landmarks.get('gonion_left_idx', landmarks['chin_idx'])
+        gonion_R = landmarks.get('gonion_right_idx', landmarks['chin_idx'])
+
+        raw_D_L1 = _calculate_surface_distance(mesh, l_chin_ref, gonion_L)
+        raw_D_L2 = _calculate_surface_distance(mesh, gonion_L,   landmarks['chin_idx'])
+        raw_D_R2 = _calculate_surface_distance(mesh, landmarks['chin_idx'], gonion_R)
+        raw_D_R1 = _calculate_surface_distance(mesh, gonion_R,   r_chin_ref)
+        under_chin_D = raw_D_L1 + raw_D_L2 + raw_D_R2 + raw_D_R1
         if under_chin_D <= 0:
             under_chin_D = (37.0 / 58.0) * A
 
