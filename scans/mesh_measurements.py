@@ -658,10 +658,10 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         l_chin_ref = ear_left['ear_root_idx'] if ear_left else landmarks.get('left_ear_level_idx', landmarks['left_side_idx'])
         r_chin_ref = ear_right['ear_root_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
 
-        # Mandibular Angle (Gonion) on each side: corner of lower jaw directly below the ear
+        # Mandibular Angle (Gonion) on each side: jawline chinstrap point below and slightly anterior to ear
         if ear_left:
             gonion_L = int(np.argmin(np.linalg.norm(
-                vertices - [vertices[ear_left['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_left['ear_root_idx'], 2] - extents[2] * 0.04],
+                vertices - [vertices[ear_left['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_left['ear_root_idx'], 2] + extents[2] * 0.03],
                 axis=1
             )))
         else:
@@ -669,7 +669,7 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
 
         if ear_right:
             gonion_R = int(np.argmin(np.linalg.norm(
-                vertices - [vertices[ear_right['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_right['ear_root_idx'], 2] - extents[2] * 0.04],
+                vertices - [vertices[ear_right['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_right['ear_root_idx'], 2] + extents[2] * 0.03],
                 axis=1
             )))
         else:
