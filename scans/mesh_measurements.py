@@ -153,10 +153,11 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
         head_indices = np.where(vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.45))[0]
         landmarks['back_of_head_idx'] = int(head_indices[np.argmin(vertices[head_indices, 2])]) if len(head_indices) > 0 else 0
 
-    # 4b. Nape / Suboccipital baseline (where helmet sagittal arc B terminates at the back of neck)
+    # 4b. Nape / Suboccipital baseline (where helmet sagittal arc B terminates at base of skull / nuchal line)
+    # The helmet stops at the inion / nuchal groove (Y ~ 0.40 - 0.48 of head height), NOT down on the neck
     nape_mask = (
-        (vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.18)) &
-        (vertices[:, 1] < (chin_y + (top_y - chin_y) * 0.38)) &
+        (vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.40)) &
+        (vertices[:, 1] < (chin_y + (top_y - chin_y) * 0.48)) &
         (np.abs(vertices[:, 0]) < extents[0] * 0.16) &
         (vertices[:, 2] < 0)
     )
@@ -180,8 +181,8 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
                 idx = int(np.argmin(np.linalg.norm(vertices - eye_est, axis=1)))
             landmarks[f'eye_outer_corner_{side}_idx'] = idx
 
-            # 5b. Lateral Eyebrow Ridge (directly above outer canthus for measurement E)
-            brow_est = vertices[idx] + [0, extents[1] * 0.06, extents[2] * 0.02]
+            # 5b. Lateral Eyebrow Ridge (tail of eyebrow arch for measurement E)
+            brow_est = vertices[idx] + [0, extents[1] * 0.035, extents[2] * 0.015]
             if len(pool) > 0:
                 landmarks[f'eyebrow_lateral_{side}_idx'] = int(pool[np.argmin(np.linalg.norm(vertices[pool] - brow_est, axis=1))])
             else:
@@ -615,19 +616,21 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         ear_right = _find_ear_landmarks(mesh, landmarks, side='right')
         ear_left  = _find_ear_landmarks(mesh, landmarks, side='left')
 
-        l_ear_ref = ear_left.get('ear_root_top_idx', ear_left['ear_top_idx'])  if ear_left  else landmarks.get('left_ear_level_idx',  landmarks['left_side_idx'])
-        r_ear_ref = ear_right.get('ear_root_top_idx', ear_right['ear_top_idx']) if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
+        # ── Measurement C: Coronal Arc (L tragus / canal → Vertex → R tragus / canal) ─
+        # In ATO FORM helmet sizing, the cross arc is measured from the auditory meatus / tragion over the vertex
+        l_ear_ref = ear_left['ear_root_idx']  if ear_left  else landmarks.get('left_ear_level_idx',  landmarks['left_side_idx'])
+        r_ear_ref = ear_right['ear_root_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
 
-        # ── Measurement C: Coronal Arc (L ear root → Vertex → R ear root) ─
         raw_C_L = _calculate_surface_distance(mesh, l_ear_ref,                    landmarks['top_of_head_idx'])
         raw_C_R = _calculate_surface_distance(mesh, landmarks['top_of_head_idx'], r_ear_ref)
         cross_measurement_C = raw_C_L + raw_C_R
         if cross_measurement_C <= 0:
             cross_measurement_C = (32.0 / 58.0) * A
 
-        # ── Measurement D: Under-Chin Arc (L ear root → Chin → R ear root) ─
-        l_chin_ref = ear_left.get('ear_root_top_idx', ear_left['ear_root_idx']) if ear_left else landmarks.get('left_ear_level_idx', landmarks['left_side_idx'])
-        r_chin_ref = ear_right.get('ear_root_top_idx', ear_right['ear_root_idx']) if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
+        # ── Measurement D: Under-Chin Arc (L earlobe / base → Chin → R earlobe / base) ─
+        # Helmet chin strap attaches and passes from the lower ear / lobule base around the chin to the opposite lobule
+        l_chin_ref = ear_left['earlobe_bottom_idx']  if ear_left  else landmarks.get('left_ear_level_idx',  landmarks['left_side_idx'])
+        r_chin_ref = ear_right['earlobe_bottom_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
         raw_D_L = _calculate_surface_distance(mesh, l_chin_ref,              landmarks['chin_idx'])
         raw_D_R = _calculate_surface_distance(mesh, landmarks['chin_idx'],   r_chin_ref)
         under_chin_D = raw_D_L + raw_D_R
@@ -671,12 +674,13 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         else:
             ear_width_H = (4.5 / 58.0) * A
 
-        # ── Measurement F: Eye Corner → Ear Root ────────────────────────────────
+        # ── Measurement F: Eye Corner → Upper Ear Root (Otobasion superius) ─────
+        # ATO FORM: Äußerer Augenwinkel zum Ohransatz (outer canthus to upper ear root / Otobasion superius)
         f_vals = []
         for side, e in [('right', ear_right), ('left', ear_left)]:
             if e is not None and f'eye_outer_corner_{side}_idx' in landmarks:
                 c_idx = landmarks[f'eye_outer_corner_{side}_idx']
-                r_idx = e.get('ear_root_idx', e.get('ear_root_top_idx'))
+                r_idx = e.get('ear_root_top_idx', e.get('ear_root_idx'))
                 if c_idx is not None and r_idx is not None:
                     f_vals.append(float(np.linalg.norm(vertices[c_idx] - vertices[r_idx])))
         if f_vals:
@@ -711,13 +715,13 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         zyg_R = vertices[landmarks['zygoma_right_idx']]
 
         # N: Cheek Guard Width — width of an individual cheek protection pad (~5.0 - 6.0 cm)
-        # Lateral span of single cheek pad from zygoma to ear root / preauricular junction (~half bizygomatic span)
-        ear_ref_L = l_chin_ref
-        ear_ref_R = r_chin_ref
-        n_left  = float(np.linalg.norm(zyg_L - vertices[ear_ref_L]))
-        n_right = float(np.linalg.norm(zyg_R - vertices[ear_ref_R]))
+        # Pad spans approximately ~45% of the distance from zygomatic prominence towards the preauricular root
+        ear_ref_L = ear_left['ear_root_idx'] if ear_left else landmarks.get('left_ear_level_idx', landmarks['left_side_idx'])
+        ear_ref_R = ear_right['ear_root_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
+        n_left  = float(np.linalg.norm(zyg_L - vertices[ear_ref_L])) * 0.45
+        n_right = float(np.linalg.norm(zyg_R - vertices[ear_ref_R])) * 0.45
         n_vals  = [v for v in (n_left, n_right) if v > 0]
-        cheek_guard_width_N = float(np.mean(n_vals)) if n_vals else (0.5 * float(np.linalg.norm(zyg_L - zyg_R)))
+        cheek_guard_width_N = float(np.mean(n_vals)) if n_vals else 0.092 * A
         if cheek_guard_width_N <= 0:
             cheek_guard_width_N = 0.092 * A
 
