@@ -664,10 +664,16 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         else:
             ear_height_G = (7.0 / 58.0) * A
 
-        # ── Measurement H: Ear Width (straight caliper physical depth) ───────────
+        # ── Measurement H: Ear Width (horizontal sagittal breadth) ───────────────
+        # In anthropometry (DIN ISO 7250 / ATO FORM), ear breadth is the horizontal distance
+        # from anterior attachment / tragus to posterior free margin of helix.
+        # Excludes vertical height slant (Delta Y) which caused diagonal overestimation (5.25 cm).
         if ears_both:
             h_vals = [
-                float(np.linalg.norm(vertices[e['ear_root_idx']] - vertices[e['ear_posterior_idx']]))
+                float(np.sqrt(
+                    (vertices[e['ear_root_idx'], 2] - vertices[e['ear_posterior_idx'], 2]) ** 2 +
+                    (vertices[e['ear_root_idx'], 0] - vertices[e['ear_posterior_idx'], 0]) ** 2
+                ))
                 for e in ears_both
             ]
             ear_width_H = float(np.mean(h_vals)) if h_vals else ((4.5 / 58.0) * A)
