@@ -42,17 +42,16 @@ KeenTools avatar models include the neck, throat, and upper chest. Landmarks mus
 
 ---
 
-## 4. Ground Truth Benchmark Reference ($A = 60.0\text{ cm}$)
-When calibrating on a physical head of circumference $A = 60.0\text{ cm}$, the pure 3D mesh measurements must target:
-* **Head Circumference (A)**: $60.00\text{ cm}$ (User input)
-* **Forehead to Back (B)**: $\approx 30.0\text{ cm}$
-* **Cross Measurement (C)**: $\approx 26.5\text{ cm}$
-* **Under Chin (D)**: $\approx 34.0\text{ cm}$
-* **Eye corner to Ear (F)**: $\approx 10.0\text{ cm}$
-* **Ear Height (G)**: $\approx 7.0\text{ cm}$
-* **Ear Width (H)**: $\approx 4.5\text{ cm}$
-* **Eyebrow to Earlobe (E)**: $\approx 12.0 - 13.0\text{ cm}$
-* **Cheek Guard Height (M)**: $\approx 4.5 - 5.5\text{ cm}$ (ATO FORM Starlight: Vertical height of an individual cheek protection pad)
-* **Cheek Guard Clearance (L)**: $\approx 4.5 - 5.2\text{ cm}$ (ATO FORM Starlight: Height of free area from forehead guard to cheek protection pad)
-* **Cheek Guard Width (N)**: $\approx 5.0 - 6.0\text{ cm}$ (ATO FORM Starlight: Width of an individual cheek protection pad)
-* **Head Height (Vertex to Chin)**: $\approx 22.0 - 23.5\text{ cm}$ (excluding neck)
+## 4. Ground Truth Benchmark Reference ($A = 58.0\text{ cm}$)
+When calibrating on a physical head of circumference $A = 58.0\text{ cm}$ (ATO FORM Starlight specifications):
+* **Head Circumference (A)**: $58.0\text{ cm}$ (User input)
+* **Forehead to Back (B)**: $35.0\text{ cm}$ (Nasion over vertex to nape of neck)
+* **Cross Measurement (C)**: $32.0\text{ cm}$ (Ear to ear over crown)
+* **Under Chin (D)**: $37.0\text{ cm}$ (Ear to ear under chin)
+* **Eyebrow to Earlobe (E)**: $8.0\text{ cm}$
+* **Eye Corner to Ear Root (F)**: $8.5\text{ cm}$
+* **Ear Height (G)**: $7.0\text{ cm}$
+* **Ear Width (H)**: $4.5\text{ cm}$
+* **Cheek Guard Height (M)**: $\approx 4.5\text{ cm}$
+* **Cheek Guard Clearance (L)**: $\approx 4.5 - 5.3\text{ cm}$
+* **Cheek Guard Width (N)**: $\approx 5.3\text{ cm}$
