@@ -230,13 +230,13 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
         landmarks['left_ear_level_idx'] = landmarks['left_side_idx']
         landmarks['right_ear_level_idx'] = landmarks['right_side_idx']
 
-    # 9. Mandibular Angles (Gonion - Left & Right): Corner / angle of the lower jaw
+    # 9. Mandibular Angles (Gonion - Left & Right): Corner / angle of the lower jaw below ear
     for side, sign, pool in (('right', 1, right_indices), ('left', -1, left_indices)):
         try:
             gonion_est = np.array([
                 sign * extents[0] * 0.28,
-                chin_y + (top_y - chin_y) * 0.12,
-                vertices[landmarks['nasion_idx'], 2] - extents[2] * 0.28
+                chin_y + (top_y - chin_y) * 0.14,
+                vertices[landmarks['nasion_idx'], 2] - extents[2] * 0.55
             ])
             if len(pool) > 0:
                 landmarks[f'gonion_{side}_idx'] = int(pool[np.argmin(np.linalg.norm(vertices[pool] - gonion_est, axis=1))])
@@ -657,8 +657,23 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         # Helmet chin strap attaches at the ear root, travels along the jawline/gonion, and wraps under the chin
         l_chin_ref = ear_left['ear_root_idx'] if ear_left else landmarks.get('left_ear_level_idx', landmarks['left_side_idx'])
         r_chin_ref = ear_right['ear_root_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
-        gonion_L = landmarks.get('gonion_left_idx', landmarks['chin_idx'])
-        gonion_R = landmarks.get('gonion_right_idx', landmarks['chin_idx'])
+
+        # Mandibular Angle (Gonion) on each side: corner of lower jaw directly below the ear
+        if ear_left:
+            gonion_L = int(np.argmin(np.linalg.norm(
+                vertices - [vertices[ear_left['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_left['ear_root_idx'], 2] - extents[2] * 0.04],
+                axis=1
+            )))
+        else:
+            gonion_L = landmarks.get('gonion_left_idx', landmarks['chin_idx'])
+
+        if ear_right:
+            gonion_R = int(np.argmin(np.linalg.norm(
+                vertices - [vertices[ear_right['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_right['ear_root_idx'], 2] - extents[2] * 0.04],
+                axis=1
+            )))
+        else:
+            gonion_R = landmarks.get('gonion_right_idx', landmarks['chin_idx'])
 
         raw_D_L1 = _calculate_surface_distance(mesh, l_chin_ref, gonion_L)
         raw_D_L2 = _calculate_surface_distance(mesh, gonion_L,   landmarks['chin_idx'])
