@@ -41,6 +41,9 @@ class DashboardScanSerializer(serializers.ModelSerializer):
     submission_date = serializers.DateTimeField(source='created_at', read_only=True)
     reconstructed_3d_head = serializers.SerializerMethodField()
     pdf_report_url = serializers.SerializerMethodField()
+    thumbnail = serializers.SerializerMethodField()
+    image_front = serializers.SerializerMethodField()
+    all_images = serializers.SerializerMethodField()
     scan_images = serializers.SerializerMethodField()
     head_width = serializers.CharField()
     head_height = serializers.CharField()
@@ -68,6 +71,9 @@ class DashboardScanSerializer(serializers.ModelSerializer):
             'status',
             'notes',
             'custom_field',
+            'thumbnail',
+            'image_front',
+            'all_images',
             'reconstructed_3d_head',
             'scan_images',
             'pdf_report_url',
@@ -88,6 +94,17 @@ class DashboardScanSerializer(serializers.ModelSerializer):
             'cheek_guard_height_M',
             'cheek_guard_width_N'
         )
+
+    def get_thumbnail(self, obj):
+        request = self.context.get('request')
+        return get_full_media_url(request, obj.image_front)
+
+    def get_image_front(self, obj):
+        request = self.context.get('request')
+        return get_full_media_url(request, obj.image_front)
+
+    def get_all_images(self, obj):
+        return self.get_scan_images(obj).get("all_images", [])
 
     def get_pdf_report_url(self, obj):
         if obj.status == Scan.Status.COMPLETED:

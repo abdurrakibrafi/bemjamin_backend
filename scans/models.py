@@ -4,6 +4,7 @@ import uuid
 
 class Scan(models.Model):
     class Status(models.TextChoices):
+        PENDING_APPROVAL = 'PENDING_APPROVAL', 'Pending Approval'
         PROCESSING = 'PROCESSING', 'Processing'
         COMPLETED = 'COMPLETED', 'Completed'
         FAILED = 'FAILED', 'Failed'
@@ -62,3 +63,31 @@ class ScanImage(models.Model):
 
     class Meta:
         ordering = ['order']
+
+
+class KeenToolsQuota(models.Model):
+    max_scans = models.PositiveIntegerField(default=40, help_text="Maximum allowed KeenTools scans")
+    used_scans = models.PositiveIntegerField(default=0, help_text="Number of scans processed by KeenTools since last reset")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "KeenTools Quota"
+        verbose_name_plural = "KeenTools Quota"
+
+    def __str__(self):
+        return f"KeenTools Quota: {self.used_scans}/{self.max_scans} used"
+
+    @classmethod
+    def get_singleton(cls):
+        obj, _ = cls.objects.get_or_create(id=1, defaults={'max_scans': 40, 'used_scans': 0})
+        return obj
+
+    @classmethod
+    def is_quota_available(cls) -> bool:
+        quota = cls.get_singleton()
+        return quota.used_scans < quota.max_scans
+
+    @classmethod
+    def increment_used(cls):
+        from django.db.models import F
+        cls.objects.filter(id=1).update(used_scans=F('used_scans') + 1)

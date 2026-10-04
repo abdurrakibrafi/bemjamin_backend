@@ -36,9 +36,24 @@ class ScanViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         scan = serializer.instance
-        
-        # Defer task until after the transaction is committed
-        transaction.on_commit(lambda: process_scan_and_save.delay(str(scan.id)))
+        from .models import KeenToolsQuota
+        quota = KeenToolsQuota.get_singleton()
+
+        if quota.is_quota_available():
+            KeenToolsQuota.increment_used()
+            # Defer task until after the transaction is committed
+            transaction.on_commit(lambda: process_scan_and_save.delay(str(scan.id)))
+        else:
+            scan.status = Scan.Status.PENDING_APPROVAL
+            scan.failure_reason = f"KeenTools maximum scan limit ({quota.max_scans}) reached. Awaiting admin approval or quota reset."
+            scan.save(update_fields=['status', 'failure_reason'])
+
+            from dashboard.models import AdminNotification
+            AdminNotification.objects.create(
+                notification_type=AdminNotification.NotificationType.NEW_SCAN,
+                title="KeenTools Quota Reached",
+                message=f"Scan '{scan.name}' from user {scan.user.email} was placed on hold because KeenTools limit ({quota.used_scans}/{quota.max_scans}) is reached."
+            )
         
         # NOTE: The response structure is preserved as requested
         detail_serializer = ScanDetailSerializer(scan, context={'request': request})

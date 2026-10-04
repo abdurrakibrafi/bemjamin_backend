@@ -1,6 +1,20 @@
 from django.contrib import admin
-from .models import Scan, ScanImage
+from .models import Scan, ScanImage, KeenToolsQuota
 from django.db import models
+
+
+@admin.register(KeenToolsQuota)
+class KeenToolsQuotaAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'used_scans', 'max_scans', 'updated_at')
+    fields = ('max_scans', 'used_scans', 'updated_at')
+    readonly_fields = ('updated_at',)
+
+    def has_add_permission(self, request):
+        return not KeenToolsQuota.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 class ScanImageInline(admin.TabularInline):
     model = ScanImage

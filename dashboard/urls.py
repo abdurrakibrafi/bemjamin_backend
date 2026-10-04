@@ -13,6 +13,7 @@ from .views import (
     AdminProfileView,
     AdminChangePasswordView,
     SendPushNotificationAPIView,    
+    KeenToolsQuotaAPIView,
 )
 
 router = DefaultRouter()
@@ -31,5 +32,7 @@ urlpatterns = [
     path('settings/profile/', AdminProfileView.as_view(), name='admin-profile'),
     path('settings/change-password/', AdminChangePasswordView.as_view(), name='admin-change-password'),
     path('push-notifications/send/', SendPushNotificationAPIView.as_view(), name='send-push-notification'),
+    path('keentools-quota/', KeenToolsQuotaAPIView.as_view(), name='keentools-quota'),
+    path('keentools-quota/reset/', KeenToolsQuotaAPIView.as_view(), name='keentools-quota-reset'),
     path('', include(router.urls)),
 ]

@@ -53,9 +53,20 @@ class DashboardStatsAPIView(APIView):
         ).count()
         user_change = self._calculate_percentage_change(users_this_month, users_last_month)
         scan_change = self._calculate_percentage_change(scans_this_month, scans_last_month)
+
+        from scans.models import KeenToolsQuota
+        quota = KeenToolsQuota.get_singleton()
+        quota_data = {
+            "max_scans": quota.max_scans,
+            "used_scans": quota.used_scans,
+            "remaining_scans": max(0, quota.max_scans - quota.used_scans),
+            "is_limit_reached": quota.used_scans >= quota.max_scans,
+        }
+
         return Response({
             "total_registered_user": {"count": total_users, "change": user_change},
             "total_3d_head_scanner": {"count": total_scans, "change": scan_change},
+            "keentools_quota": quota_data,
         })
 
 class MonthlyOverviewChartAPIView(APIView):
@@ -189,8 +200,12 @@ class ScanManagementViewSet(viewsets.ModelViewSet):
     def request_rescan(self, request, pk=None):
         scan = self.get_object()
         scan.status = Scan.Status.PROCESSING
+        scan.failure_reason = None
         scan.save()
         
+        from scans.models import KeenToolsQuota
+        KeenToolsQuota.increment_used()
+
         from scans.tasks import process_scan_and_save
         process_scan_and_save.delay(str(scan.id))
         
@@ -200,6 +215,31 @@ class ScanManagementViewSet(viewsets.ModelViewSet):
             message=f"An admin has requested a re-scan of your scan named '{scan.name}'."
         )
         return Response({'status': f'Re-scan for scan ID {scan.id} has been queued.'})
+
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve_scan(self, request, pk=None):
+        scan = self.get_object()
+        scan.status = Scan.Status.PROCESSING
+        scan.failure_reason = None
+        scan.save()
+        
+        from scans.models import KeenToolsQuota
+        KeenToolsQuota.increment_used()
+
+        from scans.tasks import process_scan_and_save
+        process_scan_and_save.delay(str(scan.id))
+        
+        create_and_send_notification(
+            user=scan.user,
+            title="Scan Approved",
+            message=f"Your scan named '{scan.name}' has been approved and processing has started."
+        )
+        return Response({
+            'status': 'success',
+            'message': f"Scan '{scan.name}' (ID: {scan.id}) approved and queued for KeenTools processing.",
+            'scan_id': str(scan.id),
+            'scan_status': scan.status
+        })
 
 class ContactMessageViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminUser]
@@ -334,3 +374,46 @@ class TermsAndConditionsAPIView(APIView):
         content = get_object_or_404(SiteContent, slug='terms-and-conditions')
         serializer = SiteContentSerializer(content)
         return Response(serializer.data)
+
+class KeenToolsQuotaAPIView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        from scans.models import KeenToolsQuota
+        quota = KeenToolsQuota.get_singleton()
+        return Response({
+            "max_scans": quota.max_scans,
+            "used_scans": quota.used_scans,
+            "remaining_scans": max(0, quota.max_scans - quota.used_scans),
+            "is_limit_reached": quota.used_scans >= quota.max_scans,
+            "updated_at": quota.updated_at
+        })
+
+    def post(self, request):
+        from scans.models import KeenToolsQuota
+        quota = KeenToolsQuota.get_singleton()
+
+        new_max = request.data.get('max_scans')
+        if new_max is not None:
+            try:
+                quota.max_scans = max(1, int(new_max))
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "max_scans must be a positive integer."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        quota.used_scans = 0
+        quota.save()
+
+        return Response({
+            "status": "success",
+            "message": "KeenTools scan quota has been reset successfully.",
+            "data": {
+                "max_scans": quota.max_scans,
+                "used_scans": quota.used_scans,
+                "remaining_scans": max(0, quota.max_scans - quota.used_scans),
+                "is_limit_reached": False,
+                "updated_at": quota.updated_at
+            }
+        }, status=status.HTTP_200_OK)
