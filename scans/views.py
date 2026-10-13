@@ -7,7 +7,7 @@ from django.http import FileResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Scan
 from .serializers import ScanCreateSerializer, ScanDetailSerializer
-from .tasks import process_scan_and_save 
+from .tasks import process_scan_and_save, send_quota_exceeded_admin_email 
 from .pagination import ScanListPagination
 from .filters import ScanDateFilter
 from dashboard.pagination import CustomDashboardPagination
@@ -54,6 +54,8 @@ class ScanViewSet(viewsets.ModelViewSet):
                 title="KeenTools Quota Reached",
                 message=f"Scan '{scan.name}' from user {scan.user.email} was placed on hold because KeenTools limit ({quota.used_scans}/{quota.max_scans}) is reached."
             )
+
+            transaction.on_commit(lambda: send_quota_exceeded_admin_email.delay(str(scan.id)))
         
         # NOTE: The response structure is preserved as requested
         detail_serializer = ScanDetailSerializer(scan, context={'request': request})

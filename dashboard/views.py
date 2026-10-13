@@ -54,14 +54,22 @@ class DashboardStatsAPIView(APIView):
         user_change = self._calculate_percentage_change(users_this_month, users_last_month)
         scan_change = self._calculate_percentage_change(scans_this_month, scans_last_month)
 
-        from scans.models import KeenToolsQuota
-        quota = KeenToolsQuota.get_singleton()
-        quota_data = {
-            "max_scans": quota.max_scans,
-            "used_scans": quota.used_scans,
-            "remaining_scans": max(0, quota.max_scans - quota.used_scans),
-            "is_limit_reached": quota.used_scans >= quota.max_scans,
-        }
+        try:
+            from scans.models import KeenToolsQuota
+            quota = KeenToolsQuota.get_singleton()
+            quota_data = {
+                "max_scans": quota.max_scans,
+                "used_scans": quota.used_scans,
+                "remaining_scans": max(0, quota.max_scans - quota.used_scans),
+                "is_limit_reached": quota.used_scans >= quota.max_scans,
+            }
+        except Exception:
+            quota_data = {
+                "max_scans": 40,
+                "used_scans": 0,
+                "remaining_scans": 40,
+                "is_limit_reached": False,
+            }
 
         return Response({
             "total_registered_user": {"count": total_users, "change": user_change},
@@ -379,15 +387,27 @@ class KeenToolsQuotaAPIView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        from scans.models import KeenToolsQuota
-        quota = KeenToolsQuota.get_singleton()
-        return Response({
-            "max_scans": quota.max_scans,
-            "used_scans": quota.used_scans,
-            "remaining_scans": max(0, quota.max_scans - quota.used_scans),
-            "is_limit_reached": quota.used_scans >= quota.max_scans,
-            "updated_at": quota.updated_at
-        })
+        try:
+            from scans.models import KeenToolsQuota
+            quota = KeenToolsQuota.get_singleton()
+            return Response({
+                "max_scans": quota.max_scans,
+                "used_scans": quota.used_scans,
+                "remaining_scans": max(0, quota.max_scans - quota.used_scans),
+                "is_limit_reached": quota.used_scans >= quota.max_scans,
+                "updated_at": quota.updated_at.isoformat() if getattr(quota, 'updated_at', None) else None
+            })
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to retrieve KeenTools quota: %s", e)
+            return Response(
+                {
+                    "error": f"Failed to retrieve KeenTools quota: {str(e)}",
+                    "detail": "The database table 'scans_keentoolsquota' may not exist yet. Please run migrations: 'python manage.py migrate'."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def post(self, request):
         from scans.models import KeenToolsQuota
@@ -406,14 +426,59 @@ class KeenToolsQuotaAPIView(APIView):
         quota.used_scans = 0
         quota.save()
 
+        # Automatically queue pending scans that were held due to quota limit
+        from scans.models import Scan
+        from scans.tasks import process_scan_and_save
+        from notifications.utils import create_and_send_notification
+        import logging
+        logger = logging.getLogger(__name__)
+
+        available_slots = quota.max_scans
+        pending_scans = list(
+            Scan.objects.filter(status=Scan.Status.PENDING_APPROVAL)
+            .select_related('user')
+            .order_by('created_at')[:available_slots]
+        )
+
+        queued_count = 0
+        for scan in pending_scans:
+            scan.status = Scan.Status.PROCESSING
+            scan.failure_reason = None
+            scan.save(update_fields=['status', 'failure_reason'])
+
+            KeenToolsQuota.increment_used()
+            process_scan_and_save.delay(str(scan.id))
+
+            try:
+                create_and_send_notification(
+                    user=scan.user,
+                    title="Scan Processing Started",
+                    message=f"Your scan '{scan.name}' has been released from the queue and processing has started."
+                )
+            except Exception as notify_err:
+                logger.warning(f"Failed to send notification for queued scan {scan.id}: {notify_err}")
+
+            queued_count += 1
+
+        quota.refresh_from_db()
+        remaining_pending = Scan.objects.filter(status=Scan.Status.PENDING_APPROVAL).count()
+
+        message = "KeenTools scan quota has been reset successfully."
+        if queued_count > 0:
+            message += f" {queued_count} pending scan(s) have been queued and started processing."
+            if remaining_pending > 0:
+                message += f" {remaining_pending} scan(s) still remain pending approval due to quota capacity."
+
         return Response({
             "status": "success",
-            "message": "KeenTools scan quota has been reset successfully.",
+            "message": message,
             "data": {
                 "max_scans": quota.max_scans,
                 "used_scans": quota.used_scans,
                 "remaining_scans": max(0, quota.max_scans - quota.used_scans),
-                "is_limit_reached": False,
-                "updated_at": quota.updated_at
+                "is_limit_reached": quota.used_scans >= quota.max_scans,
+                "updated_at": quota.updated_at,
+                "queued_scans_processed": queued_count,
+                "remaining_pending_scans": remaining_pending
             }
         }, status=status.HTTP_200_OK)

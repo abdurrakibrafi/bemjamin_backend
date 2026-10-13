@@ -158,10 +158,10 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
         landmarks['back_of_head_idx'] = int(head_indices[np.argmin(vertices[head_indices, 2])]) if len(head_indices) > 0 else 0
 
     # 4b. Nape / Suboccipital baseline (where helmet sagittal arc B terminates at base of skull / nuchal line)
-    # The helmet stops at the inion / nuchal groove (Y ~ 0.40 - 0.48 of head height), NOT down on the neck
+    # The helmet stops at the inion / nuchal groove (Y ~ 0.53 - 0.61 of head height), NOT down on the cervical neck
     nape_mask = (
-        (vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.40)) &
-        (vertices[:, 1] < (chin_y + (top_y - chin_y) * 0.48)) &
+        (vertices[:, 1] > (chin_y + (top_y - chin_y) * 0.53)) &
+        (vertices[:, 1] < (chin_y + (top_y - chin_y) * 0.61)) &
         (np.abs(vertices[:, 0]) < extents[0] * 0.16) &
         (vertices[:, 2] < 0)
     )
@@ -281,13 +281,19 @@ def _find_ear_landmarks(mesh, landmarks, side='right'):
     outer_local = np.argmax(np.abs(candidates[:, 0]))
     ear_outer_idx = int(candidate_idx[outer_local])
     outer_x = vertices[ear_outer_idx, 0]
+    outer_y = vertices[ear_outer_idx, 1]
     outer_z = vertices[ear_outer_idx, 2]
 
     # Isolate the localized ear pinna:
-    # The pinna projects laterally from the cranial wall (~1.5-2.5 cm) and spans ~3.5-5.0 cm in depth.
+    # Restrict vertically within +/- 3.4 cm from outer_y (max physical ear height ~6.8 cm)
+    # Restrict laterally to projecting ear vertices (within 1.8 cm of outer_x)
     # Exclude medial scalp/neck vertices so we don't accidentally pick scalp/neck extrema.
-    x_thresh = max(float(np.abs(outer_x) - 2.5), float(np.abs(outer_x) * 0.82))
-    pinna_mask = (np.abs(candidates[:, 0]) >= x_thresh) & (np.abs(candidates[:, 2] - outer_z) <= (extents[2] * 0.12))
+    x_thresh = max(float(np.abs(outer_x) - 1.8), float(np.abs(outer_x) * 0.85))
+    pinna_mask = (
+        (np.abs(candidates[:, 0]) >= x_thresh) &
+        (np.abs(candidates[:, 1] - outer_y) <= 3.4) &
+        (np.abs(candidates[:, 2] - outer_z) <= (extents[2] * 0.10))
+    )
     ear_slice_idx = candidate_idx[pinna_mask]
     if len(ear_slice_idx) >= 5:
         candidate_idx = ear_slice_idx
@@ -301,18 +307,20 @@ def _find_ear_landmarks(mesh, landmarks, side='right'):
     ear_root_idx = int(candidate_idx[np.argmax(candidates[:, 2])])
     ear_posterior_idx = int(candidate_idx[np.argmin(candidates[:, 2])])
 
-    # Root where upper ear attaches to skull (Otobasion superius)
-    # The most medial point in the upper half of the ear pinna
-    upper_mask = candidates[:, 1] >= (np.mean(candidates[:, 1]))
-    if np.any(upper_mask):
-        upper_idx = candidate_idx[upper_mask]
-        ear_root_top_idx = int(upper_idx[np.argmin(np.abs(vertices[upper_idx, 0]))])
+    # Cranial junction where upper ear root attaches to skull (Otobasion superius)
+    # Serves as the anchor for the Coronal Arc C over the crown.
+    # Must be located on the medial cranial skull surface, NOT out on the lateral ear pinna.
+    cranial_x = vertices[ear_root_idx, 0] * 0.86
+    cranial_y = vertices[ear_root_idx, 1] + min(1.5, float(extents[1] * 0.05))
+    cranial_z = vertices[ear_root_idx, 2] + 0.2
+    cranial_est = np.array([cranial_x, cranial_y, cranial_z])
+    cranial_pool = np.where(side_mask & (np.abs(vertices[:, 1] - cranial_y) < 2.5))[0]
+    if len(cranial_pool) > 0:
+        preauricular_idx = int(cranial_pool[np.argmin(np.linalg.norm(vertices[cranial_pool] - cranial_est, axis=1))])
+        ear_root_top_idx = preauricular_idx
     else:
-        ear_root_top_idx = int(candidate_idx[np.argmin(np.abs(candidates[:, 0]))])
-
-    # Preauricular point / Otobasion superius junction (slightly above tragus at coronal arc baseline)
-    preaur_est = vertices[ear_root_idx] + [0, extents[1] * 0.04, 0]
-    preauricular_idx = int(candidate_idx[np.argmin(np.linalg.norm(vertices[candidate_idx] - preaur_est, axis=1))])
+        ear_root_top_idx = ear_root_idx
+        preauricular_idx = ear_root_idx
 
     ear_depth_raw = float(abs(vertices[ear_root_idx, 2] - vertices[ear_posterior_idx, 2]))
 
@@ -653,33 +661,15 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         if cross_measurement_C <= 0:
             cross_measurement_C = (32.0 / 58.0) * A
 
-        # ── Measurement D: Under-Chin Arc (L ear root → L gonion → Chin → R gonion → R ear root) ─
-        # Helmet chin strap attaches at the ear root, travels along the jawline/gonion, and wraps under the chin
+        # ── Measurement D: Under-Chin Arc (L anterior ear root → Chin → R anterior ear root) ─
+        # In ATO FORM helmet sizing (Ohr zu Ohr unter dem Kinn), the chinstrap runs smoothly from the anterior
+        # ear root / tragion on one side, along the mandibular jawline and under the chin (menton), directly up to the opposite ear root.
         l_chin_ref = ear_left['ear_root_idx'] if ear_left else landmarks.get('left_ear_level_idx', landmarks['left_side_idx'])
         r_chin_ref = ear_right['ear_root_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
 
-        # Mandibular Angle (Gonion) on each side: jawline chinstrap point below and slightly anterior to ear
-        if ear_left:
-            gonion_L = int(np.argmin(np.linalg.norm(
-                vertices - [vertices[ear_left['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_left['ear_root_idx'], 2] + extents[2] * 0.03],
-                axis=1
-            )))
-        else:
-            gonion_L = landmarks.get('gonion_left_idx', landmarks['chin_idx'])
-
-        if ear_right:
-            gonion_R = int(np.argmin(np.linalg.norm(
-                vertices - [vertices[ear_right['ear_outer_idx'], 0] * 0.78, chin_y + (top_y - chin_y) * 0.14, vertices[ear_right['ear_root_idx'], 2] + extents[2] * 0.03],
-                axis=1
-            )))
-        else:
-            gonion_R = landmarks.get('gonion_right_idx', landmarks['chin_idx'])
-
-        raw_D_L1 = _calculate_surface_distance(mesh, l_chin_ref, gonion_L)
-        raw_D_L2 = _calculate_surface_distance(mesh, gonion_L,   landmarks['chin_idx'])
-        raw_D_R2 = _calculate_surface_distance(mesh, landmarks['chin_idx'], gonion_R)
-        raw_D_R1 = _calculate_surface_distance(mesh, gonion_R,   r_chin_ref)
-        under_chin_D = raw_D_L1 + raw_D_L2 + raw_D_R2 + raw_D_R1
+        raw_D_L = _calculate_surface_distance(mesh, l_chin_ref, landmarks['chin_idx'])
+        raw_D_R = _calculate_surface_distance(mesh, landmarks['chin_idx'], r_chin_ref)
+        under_chin_D = raw_D_L + raw_D_R
         if under_chin_D <= 0:
             under_chin_D = (37.0 / 58.0) * A
 
