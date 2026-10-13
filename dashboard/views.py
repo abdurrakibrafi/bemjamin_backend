@@ -477,7 +477,7 @@ class KeenToolsQuotaAPIView(APIView):
                 "used_scans": quota.used_scans,
                 "remaining_scans": max(0, quota.max_scans - quota.used_scans),
                 "is_limit_reached": quota.used_scans >= quota.max_scans,
-                "updated_at": quota.updated_at,
+                "updated_at": quota.updated_at.isoformat() if getattr(quota, 'updated_at', None) else None,
                 "queued_scans_processed": queued_count,
                 "remaining_pending_scans": remaining_pending
             }

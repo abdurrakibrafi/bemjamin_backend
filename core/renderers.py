@@ -45,4 +45,9 @@ class CustomJSONRenderer(JSONRenderer):
             'data': data
         }
 
-        return ujson.dumps(response_data).encode('utf-8')
+        try:
+            return ujson.dumps(response_data).encode('utf-8')
+        except (TypeError, OverflowError):
+            import json
+            from django.core.serializers.json import DjangoJSONEncoder
+            return json.dumps(response_data, cls=DjangoJSONEncoder).encode('utf-8')
