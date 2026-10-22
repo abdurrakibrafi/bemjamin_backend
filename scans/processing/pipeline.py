@@ -246,6 +246,14 @@ def _download_obj_for_math(api_key, avatar_id):
     }
     
     file_content = _download_file_logic(api_key, avatar_id, params)
+
+    if file_content[:2] == b"PK":
+        import io, zipfile
+        with zipfile.ZipFile(io.BytesIO(file_content)) as zf:
+            names = [n for n in zf.namelist() if n.lower().endswith(".obj")]
+            if not names:
+                raise PipelineError("No .obj found inside ZIP")
+            file_content = zf.read(names[0])
     
     temp = tempfile.NamedTemporaryFile(delete=False, suffix=".obj")
     temp.write(file_content)
@@ -318,7 +326,7 @@ def run_full_scan_pipeline(scan_id):
         obj_temp_path = _download_obj_for_math(api_key, avatar_id)
         
         logger.info("Measuring OBJ...")
-        mesh = trimesh.load(obj_temp_path, file_type='obj', force='mesh')
+        from scans.processing.obj_safe import load_mesh_with_fallback; mesh = load_mesh_with_fallback(obj_temp_path)
         from ..mesh_measurements import perform_all_measurements
         cal_val = float(scan.calibration_value) if scan.calibration_value else None
         measurements = perform_all_measurements(
