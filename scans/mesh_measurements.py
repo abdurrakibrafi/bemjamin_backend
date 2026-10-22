@@ -58,7 +58,10 @@ def _calculate_surface_distance(mesh, start_idx, end_idx):
     except Exception as e:
         logger.debug(f"Geodesic Dijkstra failed: {e}")
 
-    return float(np.linalg.norm(mesh.vertices[start_idx] - mesh.vertices[end_idx]))
+    try:
+        return float(np.linalg.norm(mesh.vertices[start_idx] - mesh.vertices[end_idx]))
+    except Exception:
+        return 0.0
 
 
 def _find_anatomical_landmarks(mesh, front_image_path=None):
@@ -101,8 +104,9 @@ def _find_anatomical_landmarks(mesh, front_image_path=None):
             pass
 
     # 1. Nose Tip (Pronasale): Most anterior point (max Z) in upper-central face
-    y_min_nose = top_y - extents[1] * 0.55
-    y_max_nose = top_y - extents[1] * 0.20
+    cranial_h = min(float(extents[1]), float(extents[0]) * 1.45)
+    y_min_nose = top_y - cranial_h * 0.65
+    y_max_nose = top_y - cranial_h * 0.20
     x_nose_bound = extents[0] * 0.15
     nose_mask = (
         (vertices[:, 1] > y_min_nose) &
@@ -621,19 +625,19 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         top_y  = float(vertices[landmarks['top_of_head_idx'], 1])
         chin_y = float(vertices[landmarks['chin_idx'],        1])
         head_height = abs(top_y - chin_y)
-        if head_height <= 0:
+        if head_height <= 0 or head_height < 0.25 * A or head_height > 0.52 * A:
             head_height = 0.375 * A
 
         parietal_L = vertices[landmarks['left_side_idx']]
         parietal_R = vertices[landmarks['right_side_idx']]
         head_width = float(abs(parietal_R[0] - parietal_L[0]))
-        if head_width <= 0:
+        if head_width <= 0 or head_width < 0.20 * A or head_width > 0.40 * A:
             head_width = 0.287 * A
 
         nasion_pt = vertices[landmarks['nasion_idx']]
         inion_pt  = vertices[landmarks['back_of_head_idx']]
         head_length = float(abs(nasion_pt[2] - inion_pt[2]))
-        if head_length <= 0:
+        if head_length <= 0 or head_length < 0.22 * A or head_length > 0.42 * A:
             head_length = 0.313 * A
 
         # ── Measurement B: Sagittal Arc (Forehead → Vertex → Nape / Subocciput) ──
@@ -643,7 +647,7 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         nape_ref    = landmarks.get('nape_idx', landmarks['back_of_head_idx'])
         raw_B_back  = _calculate_surface_distance(mesh, landmarks['top_of_head_idx'], nape_ref)
         forehead_to_back_B = raw_B_front + raw_B_back
-        if forehead_to_back_B <= 0:
+        if forehead_to_back_B <= 0 or forehead_to_back_B < 0.45 * A or forehead_to_back_B > 0.78 * A:
             forehead_to_back_B = (35.0 / 58.0) * A
 
         # ── Ear Anatomical Landmarks ─────────────────────────────────────
@@ -658,7 +662,7 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         raw_C_L = _calculate_surface_distance(mesh, l_ear_ref,                    landmarks['top_of_head_idx'])
         raw_C_R = _calculate_surface_distance(mesh, landmarks['top_of_head_idx'], r_ear_ref)
         cross_measurement_C = raw_C_L + raw_C_R
-        if cross_measurement_C <= 0:
+        if cross_measurement_C <= 0 or cross_measurement_C < 0.40 * A or cross_measurement_C > 0.72 * A:
             cross_measurement_C = (32.0 / 58.0) * A
 
         # ── Measurement D: Under-Chin Arc (L anterior ear root → Chin → R anterior ear root) ─
@@ -670,7 +674,7 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
         raw_D_L = _calculate_surface_distance(mesh, l_chin_ref, landmarks['chin_idx'])
         raw_D_R = _calculate_surface_distance(mesh, landmarks['chin_idx'], r_chin_ref)
         under_chin_D = raw_D_L + raw_D_R
-        if under_chin_D <= 0:
+        if under_chin_D <= 0 or under_chin_D < 0.45 * A or under_chin_D > 0.82 * A:
             under_chin_D = (37.0 / 58.0) * A
 
         # Primary ear reference (prefer right side)
@@ -689,6 +693,8 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
             eyebrow_to_earlobe_E = float(np.mean(e_vals))
         else:
             eyebrow_to_earlobe_E = (8.0 / 58.0) * A
+        if eyebrow_to_earlobe_E <= 0 or eyebrow_to_earlobe_E < 0.12 * A or eyebrow_to_earlobe_E > 0.28 * A:
+            eyebrow_to_earlobe_E = 0.208 * A
 
         # ── Measurement G: Ear Height (straight caliper physical height) ──────────
         if ears_both:
@@ -699,11 +705,10 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
             ear_height_G = float(np.mean(g_vals)) if g_vals else ((7.0 / 58.0) * A)
         else:
             ear_height_G = (7.0 / 58.0) * A
+        if ear_height_G <= 0 or ear_height_G < 0.08 * A or ear_height_G > 0.16 * A:
+            ear_height_G = (6.5 / 58.0) * A
 
         # ── Measurement H: Ear Width (horizontal sagittal breadth) ───────────────
-        # In anthropometry (DIN ISO 7250 / ATO FORM), ear breadth is the horizontal distance
-        # from anterior attachment / tragus to posterior free margin of helix.
-        # Excludes vertical height slant (Delta Y) which caused diagonal overestimation (5.25 cm).
         if ears_both:
             h_vals = [
                 float(np.sqrt(
@@ -715,9 +720,10 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
             ear_width_H = float(np.mean(h_vals)) if h_vals else ((4.5 / 58.0) * A)
         else:
             ear_width_H = (4.5 / 58.0) * A
+        if ear_width_H <= 0 or ear_width_H < 0.045 * A or ear_width_H > 0.11 * A:
+            ear_width_H = (4.0 / 58.0) * A
 
         # ── Measurement F: Eye Corner → Ear Root (Surface) ──────────────────────
-        # ATO FORM: Äußerer Augenwinkel zum Ohransatz (outer canthus to anterior ear root / tragion along skin surface)
         f_vals = []
         for side, e in [('right', ear_right), ('left', ear_left)]:
             if e is not None and f'eye_outer_corner_{side}_idx' in landmarks:
@@ -731,13 +737,15 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
             eye_corner_to_ear_F = float(np.mean(f_vals))
         else:
             eye_corner_to_ear_F = (8.5 / 58.0) * A
+        if eye_corner_to_ear_F <= 0 or eye_corner_to_ear_F < 0.10 * A or eye_corner_to_ear_F > 0.25 * A:
+            eye_corner_to_ear_F = (8.5 / 58.0) * A
 
         # ── Eye-to-Eye (interpupillary / ocular width) ────────────────────
         eye_to_eye = float(np.linalg.norm(
             vertices[landmarks['eye_outer_corner_left_idx']]
             - vertices[landmarks['eye_outer_corner_right_idx']]
         ))
-        if eye_to_eye <= 0:
+        if eye_to_eye <= 0 or eye_to_eye < 0.07 * A or eye_to_eye > 0.16 * A:
             eye_to_eye = 0.107 * A
 
         # ── Ear-to-Ear (bitragial width) ─────────────────────────────────
@@ -747,44 +755,34 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
             ))
         else:
             ear_to_ear = head_width
-        if ear_to_ear <= 0:
+        if ear_to_ear <= 0 or ear_to_ear < 0.20 * A or ear_to_ear > 0.38 * A:
             ear_to_ear = 0.283 * A
 
         # ── Cheek Guard measurements (L, M, N) ───────────────────────────
-        # Based on ATO FORM Starlight head protection dimension specifications:
-        # L: Height of free area from forehead guard to cheek protection (Freiraum Stirn- zu Wangenschutz)
-        # M: Height of the individual cheek protection pad itself (Höhe des Wangenschutzes)
-        # N: Width of the individual cheek protection pad itself (Breite des Wangenschutzes)
         zyg_L = vertices[landmarks['zygoma_left_idx']]
         zyg_R = vertices[landmarks['zygoma_right_idx']]
 
-        # N: Cheek Guard Width — width of an individual cheek protection pad (~5.0 - 6.0 cm)
-        # Pad spans approximately ~70% of the distance from zygomatic prominence towards the preauricular root
         ear_ref_L = ear_left['ear_root_idx'] if ear_left else landmarks.get('left_ear_level_idx', landmarks['left_side_idx'])
         ear_ref_R = ear_right['ear_root_idx'] if ear_right else landmarks.get('right_ear_level_idx', landmarks['right_side_idx'])
         n_left  = float(np.linalg.norm(zyg_L - vertices[ear_ref_L])) * 0.70
         n_right = float(np.linalg.norm(zyg_R - vertices[ear_ref_R])) * 0.70
         n_vals  = [v for v in (n_left, n_right) if v > 0]
         cheek_guard_width_N = float(np.mean(n_vals)) if n_vals else 0.092 * A
-        if cheek_guard_width_N <= 0:
+        if cheek_guard_width_N <= 0 or cheek_guard_width_N < 0.05 * A or cheek_guard_width_N > 0.15 * A:
             cheek_guard_width_N = 0.092 * A
 
-        # M: Cheek Guard Height — height of an individual cheek protection pad (~4.5 - 5.5 cm)
-        # Pad spans the zygoma/cheek prominence down to mid-cheek (~48% of the distance from cheekbone to chin)
         m_left  = _calculate_surface_distance(mesh, landmarks['zygoma_left_idx'],  landmarks['chin_idx']) * 0.48
         m_right = _calculate_surface_distance(mesh, landmarks['zygoma_right_idx'], landmarks['chin_idx']) * 0.48
         m_vals  = [v for v in (m_left, m_right) if v > 0]
         cheek_guard_height_M = float(np.mean(m_vals)) if m_vals else 0.083 * A
-        if cheek_guard_height_M <= 0:
+        if cheek_guard_height_M <= 0 or cheek_guard_height_M < 0.05 * A or cheek_guard_height_M > 0.14 * A:
             cheek_guard_height_M = 0.083 * A
 
-        # L: Cheek Guard Clearance — vertical free space from forehead guard to cheek protection pad (~4.5 - 5.2 cm)
-        # Vertical clearance window from eyebrow/forehead reference plane (nasion level) down to top edge of cheek guard (zygoma)
         l_left  = float(abs(vertices[landmarks['nasion_idx'], 1] - zyg_L[1]))
         l_right = float(abs(vertices[landmarks['nasion_idx'], 1] - zyg_R[1]))
         l_vals  = [v for v in (l_left, l_right) if v > 0]
         cheek_guard_clearance_L = float(np.mean(l_vals)) if l_vals else 0.082 * A
-        if cheek_guard_clearance_L <= 0:
+        if cheek_guard_clearance_L <= 0 or cheek_guard_clearance_L < 0.05 * A or cheek_guard_clearance_L > 0.14 * A:
             cheek_guard_clearance_L = 0.082 * A
 
         # ═══════════════════════════════════════════════════════════════════
@@ -809,16 +807,25 @@ def perform_all_measurements(mesh, front_image_path=None, calibration_type=None,
             'cheek_guard_width_N':     cheek_guard_width_N,
         }
 
-        measurements = {k: round(float(v), 2) for k, v in measurements.items()}
+        cleaned = {}
+        for k, v in measurements.items():
+            try:
+                val = float(v)
+                if np.isfinite(val) and val > 0:
+                    cleaned[k] = round(val, 2)
+                else:
+                    cleaned[k] = 0.0
+            except Exception:
+                cleaned[k] = 0.0
 
         logger.info(
             f"Measurements complete (all in cm): "
-            f"circumference={measurements['head_circumference_A']}, "
-            f"width={measurements['head_width']}, "
-            f"length={measurements['head_length']}, "
-            f"height={measurements['head_height']}"
+            f"circumference={cleaned['head_circumference_A']}, "
+            f"width={cleaned['head_width']}, "
+            f"length={cleaned['head_length']}, "
+            f"height={cleaned['head_height']}"
         )
-        return measurements
+        return cleaned
 
     except Exception as e:
         logger.error(f"Measurement Calculation Error: {e}")

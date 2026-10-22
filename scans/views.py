@@ -101,24 +101,63 @@ class ScanViewSet(viewsets.ModelViewSet):
 
         from scans.management.commands.recalculate_measurements import load_mesh_from_scan
         from scans.mesh_measurements import perform_all_measurements
+        import math
+        import os
+        import tempfile
+        from decimal import Decimal
 
         mesh = load_mesh_from_scan(scan)
         if mesh is None:
             return Response({'error': 'Failed to load 3D model.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        front_img_path = None
+        temp_img_path = None
+        if scan.image_front:
+            try:
+                if hasattr(scan.image_front, 'path') and os.path.exists(scan.image_front.path):
+                    front_img_path = scan.image_front.path
+                else:
+                    temp_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                    scan.image_front.seek(0)
+                    temp_f.write(scan.image_front.read())
+                    temp_f.close()
+                    temp_img_path = temp_f.name
+                    front_img_path = temp_img_path
+            except Exception:
+                pass
+
         try:
             cal_val = float(scan.calibration_value) if scan.calibration_value else None
             new_measurements = perform_all_measurements(
                 mesh,
+                front_image_path=front_img_path,
                 calibration_type=scan.calibration_type,
                 calibration_value=cal_val
             )
+            if not new_measurements:
+                return Response({'error': 'Measurement computation produced empty results.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            fields_to_update = []
             for key, val in new_measurements.items():
-                if hasattr(scan, key):
-                    setattr(scan, key, val)
-            scan.save(update_fields=list(new_measurements.keys()))
+                if hasattr(scan, key) and val is not None:
+                    try:
+                        fval = float(val)
+                        if math.isfinite(fval) and fval > 0:
+                            setattr(scan, key, Decimal(f"{fval:.2f}"))
+                            fields_to_update.append(key)
+                    except Exception:
+                        continue
+
+            if fields_to_update:
+                scan.save(update_fields=fields_to_update)
 
             serializer = ScanDetailSerializer(scan, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({'error': f'Failed to recalculate: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'Failed to recalculate: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        finally:
+            if temp_img_path and os.path.exists(temp_img_path):
+                try:
+                    os.remove(temp_img_path)
+                except Exception:
+                    pass

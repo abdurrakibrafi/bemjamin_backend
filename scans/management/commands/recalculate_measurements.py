@@ -11,32 +11,89 @@ logger = logging.getLogger(__name__)
 
 def load_mesh_from_scan(scan):
     """
-    Load 3D mesh from scan.processed_3d_model safely, supporting both GLB and OBJ.
+    Load 3D mesh from scan.processed_3d_model safely, supporting both GLB and OBJ,
+    as well as zip archives containing .obj or .glb.
     """
     if not scan.processed_3d_model:
         return None
 
-    loaded = None
-    # 1. Try directly from filesystem path if accessible
+    import zipfile
+    from scans.processing.obj_safe import load_mesh_with_fallback
+    import tempfile
+
+    content = None
+    file_path = None
+    ext = "glb"
+
     try:
         if hasattr(scan.processed_3d_model, 'path') and os.path.exists(scan.processed_3d_model.path):
             file_path = scan.processed_3d_model.path
             ext = os.path.splitext(file_path)[1].lower().lstrip('.')
-            loaded = trimesh.load(file_path, file_type=ext if ext else None, force='mesh')
     except Exception as e:
-        logger.debug(f"Direct file read failed, falling back to stream: {e}")
+        logger.debug(f"Direct path check failed: {e}")
 
-    # 2. Fallback: stream through BytesIO (e.g. S3 or storage backend)
-    if loaded is None:
+    # Read binary content if path not accessible or if we need to check magic bytes
+    try:
+        scan.processed_3d_model.seek(0)
+        content = scan.processed_3d_model.read()
+    except Exception as e:
+        logger.error(f"Could not read 3D model content for scan {scan.id}: {e}")
+        if file_path and os.path.exists(file_path):
+            try:
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+            except Exception:
+                pass
+
+    if not content:
+        return None
+
+    # Check for zip bundle (e.g. KeenTools returning zip archive)
+    if content[:2] == b"PK":
         try:
-            content = scan.processed_3d_model.read()
-            loaded = trimesh.load(io.BytesIO(content), file_type='glb', force='mesh')
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                obj_names = [n for n in zf.namelist() if n.lower().endswith(".obj")]
+                glb_names = [n for n in zf.namelist() if n.lower().endswith(".glb")]
+                if obj_names:
+                    content = zf.read(obj_names[0])
+                    ext = "obj"
+                elif glb_names:
+                    content = zf.read(glb_names[0])
+                    ext = "glb"
         except Exception as e:
-            logger.error(f"Could not load 3D model for scan {scan.id}: {e}")
-            return None
+            logger.error(f"Zip extraction failed for scan {scan.id}: {e}")
+
+    loaded = None
+    if ext == "obj":
+        temp_obj = tempfile.NamedTemporaryFile(delete=False, suffix=".obj")
+        temp_obj.write(content)
+        temp_obj.close()
+        try:
+            loaded = load_mesh_with_fallback(temp_obj.name)
+        finally:
+            if os.path.exists(temp_obj.name):
+                try:
+                    os.remove(temp_obj.name)
+                except Exception:
+                    pass
+    else:
+        try:
+            loaded = trimesh.load(io.BytesIO(content), file_type="glb", force="mesh")
+        except Exception:
+            try:
+                loaded = trimesh.load(io.BytesIO(content), force="mesh")
+            except Exception as e:
+                logger.error(f"Trimesh load failed for scan {scan.id}: {e}")
+                return None
 
     # Handle trimesh Scene container
     if isinstance(loaded, trimesh.Scene):
+        try:
+            dumped = loaded.dump(concatenate=True)
+            if isinstance(dumped, trimesh.Trimesh):
+                return dumped
+        except Exception:
+            pass
         meshes = [m for m in loaded.geometry.values() if isinstance(m, trimesh.Trimesh)]
         if not meshes:
             return None
@@ -114,15 +171,39 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  ❌ Could not load 3D mesh from {scan.processed_3d_model}"))
                 continue
 
+            front_img_path = None
+            temp_img_path = None
+            if scan.image_front:
+                try:
+                    if hasattr(scan.image_front, 'path') and os.path.exists(scan.image_front.path):
+                        front_img_path = scan.image_front.path
+                    else:
+                        import tempfile
+                        temp_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        scan.image_front.seek(0)
+                        temp_f.write(scan.image_front.read())
+                        temp_f.close()
+                        temp_img_path = temp_f.name
+                        front_img_path = temp_img_path
+                except Exception:
+                    pass
+
             try:
                 new_measurements = perform_all_measurements(
                     mesh,
+                    front_image_path=front_img_path,
                     calibration_type=cal_type,
                     calibration_value=cal_val
                 )
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"  ❌ Error computing measurements: {e}"))
                 continue
+            finally:
+                if temp_img_path and os.path.exists(temp_img_path):
+                    try:
+                        os.remove(temp_img_path)
+                    except Exception:
+                        pass
 
             # Print comparison table
             header = f"  {'Measurement':<40} | {'Old Value':>10} | {'New Value':>10} | {'Diff':>8}"

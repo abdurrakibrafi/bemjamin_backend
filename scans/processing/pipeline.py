@@ -270,7 +270,16 @@ def _download_glb_for_display(scan, api_key, avatar_id):
     }
     
     file_content = _download_file_logic(api_key, avatar_id, params)
-    
+
+    if file_content[:2] == b"PK":
+        import io, zipfile
+        with zipfile.ZipFile(io.BytesIO(file_content)) as zf:
+            names = [n for n in zf.namelist() if n.lower().endswith(".glb")]
+            if names:
+                file_content = zf.read(names[0])
+            else:
+                logger.warning(f"No .glb found inside ZIP: {zf.namelist()}")
+
     temp_path = None
     with tempfile.NamedTemporaryFile(delete=False, suffix=".glb") as temp_file:
         temp_file.write(file_content)

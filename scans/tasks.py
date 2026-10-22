@@ -1,4 +1,5 @@
 import os
+import math
 from celery import shared_task
 import logging
 from django.db import transaction
@@ -30,11 +31,20 @@ def process_scan_and_save(scan_id: str):
         scan.refresh_from_db()
         
         measurements = results.get('measurements', {})
+        if not measurements:
+            raise PipelineError("Measurement computation produced empty results.")
+
         for key, value in measurements.items():
             if hasattr(scan, key) and value is not None:
-                setattr(scan, key, Decimal(f"{value:.2f}"))
+                try:
+                    fval = float(value)
+                    if math.isfinite(fval) and fval > 0:
+                        setattr(scan, key, Decimal(f"{fval:.2f}"))
+                except Exception:
+                    continue
         
         scan.status = Scan.Status.COMPLETED
+        scan.failure_reason = None
         scan.save() 
         
         logger.info(f"Completed processing for scan {scan_id}")
