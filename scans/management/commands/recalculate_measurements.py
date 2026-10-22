@@ -32,18 +32,20 @@ def load_mesh_from_scan(scan):
     except Exception as e:
         logger.debug(f"Direct path check failed: {e}")
 
-    # Read binary content if path not accessible or if we need to check magic bytes
     try:
-        scan.processed_3d_model.seek(0)
-        content = scan.processed_3d_model.read()
+        if file_path and os.path.exists(file_path):
+            with open(file_path, 'rb') as f:
+                content = f.read()
+        else:
+            scan.processed_3d_model.open('rb')
+            content = scan.processed_3d_model.read()
     except Exception as e:
         logger.error(f"Could not read 3D model content for scan {scan.id}: {e}")
-        if file_path and os.path.exists(file_path):
-            try:
-                with open(file_path, 'rb') as f:
-                    content = f.read()
-            except Exception:
-                pass
+        try:
+            scan.processed_3d_model.seek(0)
+            content = scan.processed_3d_model.read()
+        except Exception:
+            pass
 
     if not content:
         return None
@@ -166,7 +168,14 @@ class Command(BaseCommand):
             ))
             self.stdout.write(self.style.MIGRATE_HEADING(f"─" * 70))
 
-            mesh = load_mesh_from_scan(scan)
+            try:
+                mesh = load_mesh_from_scan(scan)
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"  ❌ Exception during load_mesh_from_scan: {e}"))
+                import traceback
+                traceback.print_exc()
+                continue
+
             if mesh is None:
                 self.stdout.write(self.style.ERROR(f"  ❌ Could not load 3D mesh from {scan.processed_3d_model}"))
                 continue
